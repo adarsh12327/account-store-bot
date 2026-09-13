@@ -1,0 +1,23 @@
+{
+  "name": "account-store-bot",
+  "version": "1.0.0",
+  "description": "Telegram store bot built with Telegraf and Firebase Firestore.",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@google-cloud/local-auth": "^3.0.1",
+    "axios": "^1.19.0",
+    "dotenv": "^16.6.1",
+    "firebase-admin": "^12.1.0",
+    "googleapis": "^174.0.1",
+    "i18n-iso-countries": "^7.14.0",
+    "libphonenumber-js": "^1.13.12",
+    "qrcode": "^1.5.4",
+    "telegraf": "^4.16.3"
+  },
+  "keywords": [],
+  "author": ""
+}

@@ -1,0 +1,19 @@
+node_modules/
+.env
+serviceAccountKey.json
+credentials.json
+gmail-token.json
+
+# Local backups / temporary files
+*.bak
+*.backup
+*.bak-*
+*.backup-*
+*.before-*
+backup/
+.cache/
+admin-products-files.zip
+
+# Source backups
+*.backup_countdown
+*.before_missing_constants_fix
