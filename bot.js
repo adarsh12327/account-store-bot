@@ -100,10 +100,9 @@ bot.catch((err, ctx) => {
   ctx.reply("⚠️ Something went wrong. Please try again in a moment.").catch(() => {});
 });
 
-bot.launch();
-logger.info("Bot started.");
+// Vercel uses Telegram Webhook mode.
+// Polling and long-running background watchers are intentionally
+// not started from this module.
+module.exports = { bot, textSteps };
 
-startFamAppWatcher(bot);
 
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
