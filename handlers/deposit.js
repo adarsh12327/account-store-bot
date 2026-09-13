@@ -40,12 +40,8 @@ const {
 
 const {
   depositAdminKeyboard,
-  countriesMenu,
-  productsMenu,
-  settingsMenu,
-  usersMenu,
-  adminHome,
 } = require("../keyboards/admin");
+const { showMainMenu } = require("./start");
 
 
 function registerDepositHandler(bot) {
@@ -99,42 +95,15 @@ function registerDepositHandler(bot) {
     try {
       await ctx.answerCbQuery("Cancelled");
 
-      const state = session.get(ctx.from.id);
-      const step = String(state?.step || "");
-
-      let menu = backToMenu();
-
-      if (
-        step.startsWith("admin_country_") ||
-        step === "admin_server1_country_search"
-      ) {
-        menu = countriesMenu();
-      } else if (step.startsWith("admin_product_")) {
-        menu = productsMenu();
-      } else if (step.startsWith("admin_settings_")) {
-        menu = settingsMenu();
-      } else if (step.startsWith("admin_user_")) {
-        menu = usersMenu();
-      } else if (step.startsWith("admin_")) {
-        menu = adminHome();
-      }
+      const user = await db.getUser(ctx.from.id);
 
       session.clear(ctx.from.id);
 
-      try {
-        await ctx.editMessageText(
-          "❌ <b>Cancelled.</b>",
-          {
-            parse_mode: "HTML",
-            ...menu,
-          }
-        );
-      } catch (editErr) {
-        await ctx.reply(
-          "❌ Cancelled.",
-          menu
-        );
-      }
+      await showMainMenu(
+        ctx,
+        user,
+        true
+      );
     } catch (err) {
       logger.error(
         "Error in flow_cancel action",
