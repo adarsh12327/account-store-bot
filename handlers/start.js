@@ -41,17 +41,9 @@ async function showMainMenu(ctx, user = null, edit = false) {
   const firstName =
     ctx.from?.first_name || "there";
 
-  const balanceText =
-    user &&
-    user.balance !== undefined &&
-    user.balance !== null
-      ? `₹${Number(user.balance).toFixed(2)}`
-      : `⏳ Loading…`;
-
   const text =
     `<b>Welcome back, ${firstName} 👋</b>\n\n` +
     `Browse our available digital products with fast delivery.\n\n` +
-    `💰 <b>Wallet Balance:</b> ${balanceText}\n\n` +
     `Select an option below to get started:`;
 
   const keyboard =
@@ -175,56 +167,6 @@ async function runBackgroundStart(
         );
       }
     }
-
-    // ----------------------------------------------------------
-    // 💰 UPDATE BALANCE AFTER USER LOAD
-    // ----------------------------------------------------------
-    // The first menu is sent instantly with "Loading…".
-    // Update the exact /start message after database loads.
-    // ----------------------------------------------------------
-
-    try {
-
-      const firstName =
-        ctx.from?.first_name || "there";
-
-      const balance =
-        Number(user?.balance || 0).toFixed(2);
-
-      const text =
-        `<b>Welcome back, ${firstName} 👋</b>\n\n` +
-        `Browse our available digital products with fast delivery.\n\n` +
-        `💰 <b>Wallet Balance:</b> ₹${balance}\n\n` +
-        `Select an option below to get started:`;
-
-      await ctx.telegram.editMessageText(
-        ctx.chat.id,
-        menuMessage.message_id,
-        undefined,
-        text,
-        {
-          parse_mode: "HTML",
-          ...mainMenu(isAdmin(telegramId)),
-        }
-      );
-
-    } catch (menuErr) {
-
-      const message =
-        String(menuErr.message || "").toLowerCase();
-
-      if (
-        !message.includes("message is not modified") &&
-        !message.includes("message can't be edited") &&
-        !message.includes("message to edit not found")
-      ) {
-        logger.warn(
-          "Unable to update wallet balance:",
-          menuErr.message
-        );
-      }
-    }
-
 
     // ----------------------------------------------------------
     // BANNED CHECK
