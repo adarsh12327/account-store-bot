@@ -201,6 +201,33 @@ async function showServer1CountryPage(ctx, page = 1) {
 
 
 // ==========================================================
+// SERVER 1 — SEARCH CANCEL
+// ==========================================================
+
+bot.action(
+  "admin:countries:server1:search_cancel",
+  async (ctx) => {
+    try {
+      await ctx.answerCbQuery("Cancelled");
+      session.clear(ctx.from.id);
+
+      await ctx.editMessageText(
+        "❌ <b>Search cancelled.</b>",
+        {
+          parse_mode: "HTML",
+          ...countriesMenu(),
+        }
+      );
+    } catch (err) {
+      logger.error(
+        "Error cancelling Server 1 country search",
+        err
+      );
+    }
+  }
+);
+
+// ==========================================================
 // SERVER 1 — SEARCH BUTTON
 // ==========================================================
 
@@ -224,7 +251,16 @@ async function showServer1CountryPage(ctx, page = 1) {
           "Example: <code>22</code>",
           {
             parse_mode: "HTML",
-            ...cancelKeyboard(),
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "❌ Cancel",
+                    callback_data: "admin:countries:server1:search_cancel",
+                  },
+                ],
+              ],
+            },
           }
         );
 
