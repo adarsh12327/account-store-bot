@@ -121,10 +121,20 @@ function registerDepositHandler(bot) {
 
       session.clear(ctx.from.id);
 
-      await ctx.reply(
-        "❌ Cancelled.",
-        menu
-      );
+      try {
+        await ctx.editMessageText(
+          "❌ <b>Cancelled.</b>",
+          {
+            parse_mode: "HTML",
+            ...menu,
+          }
+        );
+      } catch (editErr) {
+        await ctx.reply(
+          "❌ Cancelled.",
+          menu
+        );
+      }
     } catch (err) {
       logger.error(
         "Error in flow_cancel action",
