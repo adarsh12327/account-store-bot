@@ -106,3 +106,15 @@ bot.catch((err, ctx) => {
 module.exports = { bot, textSteps };
 
 
+
+if (require.main === module) {
+  bot.launch()
+    .then(() => console.log("[INFO] Telegram bot started in polling mode"))
+    .catch((err) => {
+      console.error("[ERROR] Failed to start Telegram bot:", err);
+      process.exit(1);
+    });
+
+  process.once("SIGINT", () => bot.stop("SIGINT"));
+  process.once("SIGTERM", () => bot.stop("SIGTERM"));
+}
