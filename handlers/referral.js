@@ -65,18 +65,9 @@ function registerReferralHandler(bot) {
       const referralLink =
         `https://t.me/${botUsername}?start=${encodeURIComponent(String(ctx.from.id))}`;
 
-      const hasOverride =
-        user.referralRateOverride !== null &&
-        user.referralRateOverride !== undefined &&
-        user.referralRateOverride !== "";
-
-      const globalRate = Number(
-        settings.referralPercent ?? 10
-      );
-
-      const rate = hasOverride
-        ? Number(user.referralRateOverride)
-        : globalRate;
+      // Use the referral rate already snapshotted for this user.
+      // This must match the rate used during deposit commission calculation.
+      const rate = Number(user.referralRate || 0);
 
       const referralStats =
         await db.getReferralStats(ctx.from.id);
