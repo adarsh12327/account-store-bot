@@ -1263,12 +1263,14 @@ async function getProduct(productId) {
 async function updateProduct(productId, updates = {}) {
   const productRef = db.collection(PRODUCTS).doc(productId);
 
-  // Recalculate finalPrice whenever pricing-related fields change.
+  // Recalculate finalPrice whenever any pricing-related field changes.
   if (
     "priceMode" in updates ||
     "apiPrice" in updates ||
     "manualPrice" in updates ||
-    "marginPercent" in updates
+    "marginPercent" in updates ||
+    "providerUsdPrice" in updates ||
+    "usdRate" in updates
   ) {
     const snap = await productRef.get();
 
@@ -1286,15 +1288,23 @@ async function updateProduct(productId, updates = {}) {
     let basePrice = 0;
 
     if (merged.priceMode === "API") {
-      basePrice = Number(merged.providerUsdPrice) > 0
+      basePrice = usd > 0 && rate > 0
         ? usd * rate
         : Number(merged.apiPrice) || 0;
     } else {
       basePrice = Number(merged.manualPrice) || 0;
     }
 
+    const costInr =
+      usd > 0 && rate > 0
+        ? usd * rate
+        : Number(merged.costInr) || 0;
+
     const calculatedPrice =
       basePrice + (basePrice * margin / 100);
+
+    updates.costInr =
+      Number(costInr.toFixed(2));
 
     updates.finalPrice =
       Number(calculatedPrice.toFixed(2));
@@ -1306,6 +1316,232 @@ async function updateProduct(productId, updates = {}) {
   });
 }
 
+/**
+ * Sync Server 1 provider prices.
+ *
+ * priceItems:
+ *   [{ countryCode, cost, count, retry }]
+ *
+ * countryCodeById:
+ *   Map/object that resolves product.countryId -> provider country code.
+ *
+ * Only changed API prices are written to Firestore.
+ * Manual-price products are never changed.
+ */
+async function syncServer1ProviderPrices(
+  priceItems = [],
+  countryCodeById = new Map()
+) {
+  if (!Array.isArray(priceItems)) {
+    throw new Error("SERVER1_PRICE_ITEMS_INVALID");
+  }
+
+  const snap = await db
+    .collection(PRODUCTS)
+    .where("status", "==", "enabled")
+    .where("serviceCode", "==", "tg")
+    .get();
+
+  if (snap.empty) {
+    return {
+      checked: 0,
+      changed: 0,
+      stockChanged: 0,
+      unchanged: 0,
+      providerProducts: [],
+      changedProducts: [],
+    };
+  }
+
+  const latestByCountry = new Map();
+
+  for (const item of priceItems) {
+    if (!item || !item.countryCode) {
+      continue;
+    }
+
+    const cost = Number(item.cost);
+
+    if (!Number.isFinite(cost) || cost < 0) {
+      continue;
+    }
+
+    latestByCountry.set(
+      String(item.countryCode).trim().toLowerCase(),
+      {
+        cost,
+        count: Number(item.count || 0),
+        retry: Number(item.retry || 0),
+      }
+    );
+  }
+
+  const updates = [];
+  const changedProducts = [];
+  const providerProducts = [];
+
+  let unchanged = 0;
+  let stockChanged = 0;
+
+  for (const doc of snap.docs) {
+    const product = doc.data();
+
+    // Only API-priced products are synchronized.
+    if (product.priceMode !== "API") {
+      unchanged++;
+      continue;
+    }
+
+    const countryId = String(product.countryId || "");
+
+    let countryCode = "";
+
+    if (
+      countryCodeById &&
+      typeof countryCodeById.get === "function"
+    ) {
+      countryCode = String(
+        countryCodeById.get(countryId) || ""
+      );
+    } else if (
+      countryCodeById &&
+      typeof countryCodeById === "object"
+    ) {
+      countryCode = String(
+        countryCodeById[countryId] || ""
+      );
+    }
+
+    if (!countryCode) {
+      unchanged++;
+      continue;
+    }
+
+    countryCode = countryCode.trim().toLowerCase();
+
+    const live = latestByCountry.get(countryCode);
+
+    if (!live) {
+      unchanged++;
+      continue;
+    }
+
+    const oldUsd = Number(product.providerUsdPrice || 0);
+    const oldCount = Number(product.apiCount || 0);
+    const oldRetry = Number(product.apiRetry || 0);
+
+    const priceChanged =
+      Math.abs(oldUsd - live.cost) >= 0.000001;
+
+    const currentCount = Number.isFinite(oldCount)
+      ? oldCount
+      : 0;
+
+    const currentRetry = Number.isFinite(oldRetry)
+      ? oldRetry
+      : 0;
+
+    const liveCount = Number.isFinite(live.count)
+      ? live.count
+      : 0;
+
+    const liveRetry = Number.isFinite(live.retry)
+      ? live.retry
+      : 0;
+
+    const currentStockChanged =
+      currentCount !== liveCount ||
+      currentRetry !== liveRetry;
+
+    if (currentStockChanged) {
+      stockChanged++;
+    }
+
+    // Return provider values for the local catalog cache.
+    // These are NOT written to Firestore unless the price changes.
+    providerProducts.push({
+      productId: String(doc.id),
+      countryId,
+      countryCode,
+      providerUsdPrice: live.cost,
+      apiCount: liveCount,
+      apiRetry: liveRetry,
+    });
+
+    // Price changed:
+    // update Firestore price + recalculated INR price.
+    if (priceChanged) {
+      const usdRate = Number(product.usdRate) || 0;
+      const marginPercent = Number(product.marginPercent) || 0;
+
+      const costInr = live.cost * usdRate;
+
+      const finalPrice =
+        costInr +
+        (costInr * marginPercent / 100);
+
+      const updateData = {
+        providerUsdPrice: live.cost,
+        costInr: Number(costInr.toFixed(2)),
+        finalPrice: Number(finalPrice.toFixed(2)),
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+
+      updates.push({
+        ref: doc.ref,
+        data: updateData,
+      });
+
+      changedProducts.push({
+        productId: String(doc.id),
+        countryId,
+        countryCode,
+        providerUsdPrice: live.cost,
+        costInr: Number(costInr.toFixed(2)),
+        finalPrice: Number(finalPrice.toFixed(2)),
+        apiCount: liveCount,
+        apiRetry: liveRetry,
+      });
+
+      continue;
+    }
+
+    if (!currentStockChanged) {
+      unchanged++;
+    }
+  }
+
+  if (updates.length) {
+    const BATCH_SIZE = 400;
+
+    for (
+      let i = 0;
+      i < updates.length;
+      i += BATCH_SIZE
+    ) {
+      const batch = db.batch();
+      const chunk = updates.slice(i, i + BATCH_SIZE);
+
+      for (const item of chunk) {
+        batch.update(
+          item.ref,
+          item.data
+        );
+      }
+
+      await batch.commit();
+    }
+  }
+
+  return {
+    checked: snap.size,
+    changed: updates.length,
+    stockChanged,
+    unchanged,
+    providerProducts,
+    changedProducts,
+  };
+}
 async function deleteProduct(productId) {
   await db.collection(PRODUCTS).doc(productId).delete();
 }
@@ -1857,7 +2093,7 @@ async function createServer1Order({
   externalId = null,
 }) {
   const uid = String(userId);
-  const price = Number(amount);
+  const requestedPrice = Number(amount);
 
   if (!uid) {
     throw new Error("USER_ID_REQUIRED");
@@ -1867,18 +2103,67 @@ async function createServer1Order({
     throw new Error("SERVICE_ID_REQUIRED");
   }
 
-  if (!Number.isFinite(price) || price <= 0) {
+  if (
+    !Number.isFinite(requestedPrice) ||
+    requestedPrice <= 0
+  ) {
     throw new Error("INVALID_AMOUNT");
   }
 
-  const userRef = db.collection(USERS).doc(uid);
-  const orderRef = db.collection(SERVER1_ORDERS).doc();
+  const userRef =
+    db.collection(USERS).doc(uid);
+
+  const orderRef =
+    db.collection(SERVER1_ORDERS).doc();
 
   const productRef = productId
     ? db.collection(PRODUCTS).doc(String(productId))
     : null;
 
   return db.runTransaction(async (txn) => {
+    let authoritativePrice = requestedPrice;
+
+    // Read the current Firestore product price inside
+    // the same transaction before deducting wallet balance.
+    if (productRef) {
+      const productSnap = await txn.get(productRef);
+
+      if (!productSnap.exists) {
+        throw new Error("PRODUCT_NOT_FOUND");
+      }
+
+      const product = productSnap.data();
+
+      authoritativePrice =
+        Number(product.finalPrice || 0);
+
+      if (
+        !Number.isFinite(authoritativePrice) ||
+        authoritativePrice <= 0
+      ) {
+        throw new Error("INVALID_PRODUCT_PRICE");
+      }
+
+      // The local catalog may be stale if the background
+      // provider sync changed the price just before purchase.
+      // Never deduct money at the stale price.
+      if (
+        Math.abs(
+          authoritativePrice - requestedPrice
+        ) >= 0.01
+      ) {
+        const err = new Error(
+          "Server 1 price changed. Please refresh and try again."
+        );
+
+        err.code = "SERVER1_PRICE_CHANGED";
+        err.oldPrice = requestedPrice;
+        err.newPrice = authoritativePrice;
+
+        throw err;
+      }
+    }
+
     const userSnap = await txn.get(userRef);
 
     if (!userSnap.exists) {
@@ -1888,57 +2173,59 @@ async function createServer1Order({
     const user = userSnap.data();
     const balance = Number(user.balance || 0);
 
-    if (balance < price) {
+    if (balance < authoritativePrice) {
       const err = new Error("Insufficient balance");
       err.code = "INSUFFICIENT_BALANCE";
       throw err;
     }
 
-    const newBalance = balance - price;
+    const newBalance =
+      balance - authoritativePrice;
 
     txn.update(userRef, {
       balance: newBalance,
-      totalOrders: Number(user.totalOrders || 0) + 1,
-      updatedAt: FieldValue.serverTimestamp(),
+      totalOrders:
+        Number(user.totalOrders || 0) + 1,
+      updatedAt:
+        FieldValue.serverTimestamp(),
     });
 
-    // Update automatic product popularity ranking
+    // Update automatic product popularity ranking.
     if (productRef) {
       txn.update(productRef, {
-        salesCount: FieldValue.increment(1),
-        lastSoldAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
+        salesCount:
+          FieldValue.increment(1),
+        lastSoldAt:
+          FieldValue.serverTimestamp(),
+        updatedAt:
+          FieldValue.serverTimestamp(),
       });
     }
 
     const order = {
       orderId: orderRef.id,
-
       userId: uid,
-
+      productId: productId
+        ? String(productId)
+        : null,
       serviceId: String(serviceId),
       serviceName: serviceName || "",
-
-      countryId: countryId ? String(countryId) : null,
+      countryId: countryId
+        ? String(countryId)
+        : null,
       countryName: countryName || "",
-
       provider: provider || "grizzly",
-
-      amount: price,
-
+      amount: authoritativePrice,
       status,
-
       externalId,
-
       phoneNumber: "",
       activationId: null,
-
       smsCode: "",
       deliveryInfo: "",
-
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-
+      createdAt:
+        FieldValue.serverTimestamp(),
+      updatedAt:
+        FieldValue.serverTimestamp(),
       processedAt: null,
       cancelledAt: null,
     };
@@ -1948,9 +2235,10 @@ async function createServer1Order({
     writeTransactionRecord(txn, {
       userId: uid,
       type: "server1_order_purchase",
-      amount: -price,
+      amount: -authoritativePrice,
       balanceAfter: newBalance,
-      note: `Server 1 order: ${serviceName || serviceId}`,
+      note:
+        `Server 1 order: ${serviceName || serviceId}`,
       relatedId: orderRef.id,
     });
 
@@ -1960,7 +2248,6 @@ async function createServer1Order({
     };
   });
 }
-
 
 /**
  * Get Server 1 order.
@@ -2952,6 +3239,7 @@ module.exports = {
   listServer1Orders,
   updateServer1Order,
   completeServer1Order,
+  syncServer1ProviderPrices,
   getServer1CountrySalesStats,
   getServer1OrderStats,
   getServer1TodayStats,

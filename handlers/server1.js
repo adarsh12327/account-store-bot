@@ -46,6 +46,7 @@ const db = require("../database");
 const {
   getServer1CountrySalesStats,
   completeServer1Order,
+  syncServer1ProviderPrices,
 } = db;
 const {
   getPrices,
@@ -56,12 +57,27 @@ const {
   getActivationStatus,
   cancelActivation,
 } = require("../services/server1");
-const CACHE_FILE = path.join(
+const PRICE_CACHE_FILE = path.join(
   __dirname,
   "../.cache/server1-grizzly-tg.json"
 );
 
+const CATALOG_CACHE_FILE = path.join(
+  __dirname,
+  "../.cache/server1-catalog.json"
+);
+
 const CACHE_TTL = 5 * 60 * 1000;
+
+const SALES_CACHE_FILE = path.join(
+  __dirname,
+  "../.cache/server1-sales.json"
+);
+
+const SALES_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+let server1SalesMemory = null;
+let server1SalesMemoryAt = 0;
 
 // Prevent multiple users from creating multiple Grizzly requests.
 let grizzlyFetchPromise = null;
@@ -1205,7 +1221,7 @@ async function answer(ctx, text = "") {
 // ------------------------------------------------------------
 
 function ensureCacheDir() {
-  const dir = path.dirname(CACHE_FILE);
+  const dir = path.dirname(PRICE_CACHE_FILE);
 
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, {
@@ -1216,12 +1232,12 @@ function ensureCacheDir() {
 
 function readPriceCache() {
   try {
-    if (!fs.existsSync(CACHE_FILE)) {
+    if (!fs.existsSync(PRICE_CACHE_FILE)) {
       return null;
     }
 
     const raw = fs.readFileSync(
-      CACHE_FILE,
+      PRICE_CACHE_FILE,
       "utf8"
     );
 
@@ -1246,7 +1262,7 @@ function savePriceCache(prices) {
     ensureCacheDir();
 
     fs.writeFileSync(
-      CACHE_FILE,
+      PRICE_CACHE_FILE,
       JSON.stringify(
         {
           cachedAt: Date.now(),
@@ -1438,6 +1454,61 @@ function getGrizzlyTGItem(
 }
 
 // ------------------------------------------------------------
+// 🔄 Convert Grizzly price response to sync items
+// ------------------------------------------------------------
+
+function buildGrizzlyPriceItems(root, countries = []) {
+  const items = [];
+
+  if (!root || typeof root !== "object") {
+    return items;
+  }
+
+  for (const country of countries) {
+    const countryCode = String(
+      country.countryCode || ""
+    ).trim();
+
+    if (!countryCode) {
+      continue;
+    }
+
+    const liveItem =
+      getGrizzlyTGItem(
+        root,
+        countryCode
+      );
+
+    if (!liveItem) {
+      continue;
+    }
+
+    const cost =
+      Number(liveItem.cost);
+
+    if (
+      !Number.isFinite(cost) ||
+      cost < 0
+    ) {
+      continue;
+    }
+
+    items.push({
+      countryCode,
+      cost,
+      count: Number(
+        liveItem.count || 0
+      ),
+      retry: Number(
+        liveItem.retry || 0
+      ),
+    });
+  }
+
+  return items;
+}
+
+// ------------------------------------------------------------
 // Load complete Server 1 catalog
 // ------------------------------------------------------------
 
@@ -1550,6 +1621,74 @@ function rankServer1Catalog(
   });
 }
 
+async function getCachedServer1SalesStats() {
+  // 1. Memory cache
+  if (
+    server1SalesMemory &&
+    Date.now() - server1SalesMemoryAt < SALES_CACHE_TTL
+  ) {
+    return server1SalesMemory;
+  }
+
+  // 2. JSON cache
+  try {
+    if (fs.existsSync(SALES_CACHE_FILE)) {
+      const cached = JSON.parse(
+        fs.readFileSync(SALES_CACHE_FILE, "utf8")
+      );
+
+      if (
+        cached &&
+        cached.stats &&
+        typeof cached.stats === "object" &&
+        cached.cachedAt &&
+        Date.now() - Number(cached.cachedAt) < SALES_CACHE_TTL
+      ) {
+        server1SalesMemory = cached.stats;
+        server1SalesMemoryAt = Date.now();
+
+        return server1SalesMemory;
+      }
+    }
+  } catch (err) {
+    logger.warn(
+      "Server 1 sales cache read failed:",
+      err.message
+    );
+  }
+
+  // 3. Firestore fallback
+  const stats = await getServer1CountrySalesStats();
+
+  server1SalesMemory = stats;
+  server1SalesMemoryAt = Date.now();
+
+  // 4. Persist locally
+  try {
+    ensureCacheDir();
+
+    fs.writeFileSync(
+      SALES_CACHE_FILE,
+      JSON.stringify(
+        {
+          cachedAt: Date.now(),
+          stats,
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+  } catch (err) {
+    logger.warn(
+      "Server 1 sales cache write failed:",
+      err.message
+    );
+  }
+
+  return stats;
+}
+
 function invalidateServer1CatalogCache() {
   server1CatalogMemory = null;
   server1CatalogMemoryAt = 0;
@@ -1557,14 +1696,16 @@ function invalidateServer1CatalogCache() {
 
 async function loadServer1Catalog(options = {}) {
   const forceRefresh = Boolean(options.forceRefresh);
-  const background = Boolean(options.background);
 
   // ----------------------------------------------------------
-  // ⚡ ULTRA FAST MEMORY + JSON CACHE
+  // ⚡ USER-FACING CATALOG
   // ----------------------------------------------------------
+  // User requests NEVER call Grizzly directly.
+  // Memory -> JSON -> Firestore is the only path.
+  // ----------------------------------------------------------
+
   if (!forceRefresh) {
-
-    // 1️⃣ MEMORY CACHE = fastest
+    // 1. Memory cache
     if (
       server1CatalogMemory &&
       Date.now() - server1CatalogMemoryAt <
@@ -1573,11 +1714,11 @@ async function loadServer1Catalog(options = {}) {
       return server1CatalogMemory;
     }
 
-    // 2️⃣ JSON CACHE = fast fallback
+    // 2. Local JSON cache
     try {
-      if (fs.existsSync(CACHE_FILE)) {
+      if (fs.existsSync(CATALOG_CACHE_FILE)) {
         const cached = JSON.parse(
-          fs.readFileSync(CACHE_FILE, "utf8")
+          fs.readFileSync(CATALOG_CACHE_FILE, "utf8")
         );
 
         if (
@@ -1606,14 +1747,13 @@ async function loadServer1Catalog(options = {}) {
   }
 
   // ----------------------------------------------------------
-  // 🌐 FRESH DATABASE + GRIZZLY DATA
+  // 🗄️ DATABASE FALLBACK
+  // ----------------------------------------------------------
+  // No provider API here.
+  // Prices come directly from Firestore product documents.
   // ----------------------------------------------------------
 
-  const [
-    products,
-    countries,
-    priceResult,
-  ] = await Promise.all([
+  const [products, countries] = await Promise.all([
     db.listProducts({
       onlyEnabled: true,
     }),
@@ -1621,15 +1761,7 @@ async function loadServer1Catalog(options = {}) {
     db.listServer1Countries({
       onlyEnabled: true,
     }),
-
-    getCachedGrizzlyPrices(),
   ]);
-
-  const root =
-    priceResult.prices &&
-    typeof priceResult.prices === "object"
-      ? priceResult.prices
-      : {};
 
   const countryMap = new Map();
 
@@ -1659,30 +1791,20 @@ async function loadServer1Catalog(options = {}) {
       continue;
     }
 
-    const countryCode =
-      country.countryCode || "";
+    const usdRate =
+      Number(product.usdRate || 105);
 
-    const liveItem =
-      getGrizzlyTGItem(
-        root,
-        countryCode
-      );
+    const marginPercent =
+      Number(product.marginPercent || 0);
 
-    const apiCost =
-      liveItem &&
-      Number.isFinite(
-        Number(liveItem.cost)
-      )
-        ? Number(liveItem.cost)
-        : Number(
-            product.providerUsdPrice || 0
-          );
+    const providerUsdPrice =
+      Number(product.providerUsdPrice || 0);
 
-    // Use product's stored final price
-    const usdRate = Number(product.usdRate || 105);
-    const marginPercent = Number(product.marginPercent || 0);
+    const costInr =
+      Number(product.costInr || 0);
 
-    const finalPrice = Number(product.finalPrice || 0);
+    const finalPrice =
+      Number(product.finalPrice || 0);
 
     catalog.push({
       ...product,
@@ -1695,45 +1817,50 @@ async function loadServer1Catalog(options = {}) {
         country.name ||
         "Unknown",
 
-      countryCode,
+      countryCode:
+        country.countryCode || "",
 
       emoji:
         country.emoji ||
         "🌍",
 
-      apiCost,
+      providerUsdPrice,
+      apiCost:
+        providerUsdPrice,
 
+      costInr,
       usdRate,
       marginPercent,
       finalPrice,
 
+      // These values are maintained by the
+      // background Grizzly synchronization.
       apiCount:
-        liveItem
-          ? Number(liveItem.count || 0)
-          : 0,
+        Number(product.apiCount || 0),
 
       apiRetry:
-        liveItem
-          ? Number(liveItem.retry || 0)
-          : 0,
+        Number(product.apiRetry || 0),
 
       cacheAt:
-        Date.now(),
+        Number(product.cacheAt || Date.now()),
 
       cacheStale:
-        Boolean(priceResult.stale),
+        Boolean(product.cacheStale),
     });
   }
 
   // ----------------------------------------------------------
   // 📊 SALES RANKING
   // ----------------------------------------------------------
+  // Only used when rebuilding the catalog.
+  // Normal user navigation uses the saved JSON/memory cache.
+  // ----------------------------------------------------------
 
   let salesStats = {};
 
   try {
     salesStats =
-      await getServer1CountrySalesStats();
+      await getCachedServer1SalesStats();
   } catch (err) {
     logger.warn(
       "Server 1 sales stats unavailable:",
@@ -1742,9 +1869,8 @@ async function loadServer1Catalog(options = {}) {
   }
 
   catalog.forEach((item) => {
-    const id = String(
-      item.countryId || ""
-    );
+    const id =
+      String(item.countryId || "");
 
     const stats =
       salesStats[id] || {};
@@ -1755,6 +1881,10 @@ async function loadServer1Catalog(options = {}) {
     item.salesScore =
       Number(stats.score || 0);
   });
+
+  // ----------------------------------------------------------
+  // 🏆 RANKING
+  // ----------------------------------------------------------
 
   catalog.sort((a, b) => {
     const aName =
@@ -1815,10 +1945,10 @@ async function loadServer1Catalog(options = {}) {
     }
 
     const aStock =
-      Number(a.stock || 0);
+      Number(a.apiCount || 0);
 
     const bStock =
-      Number(b.stock || 0);
+      Number(b.apiCount || 0);
 
     if (aStock !== bStock) {
       return bStock - aStock;
@@ -1828,17 +1958,17 @@ async function loadServer1Catalog(options = {}) {
   });
 
   // ----------------------------------------------------------
-  // 💾 SAVE COMPLETE CATALOG TO JSON
+  // 💾 SAVE LOCAL CATALOG CACHE
   // ----------------------------------------------------------
 
   try {
     fs.mkdirSync(
-      path.dirname(CACHE_FILE),
+      path.dirname(CATALOG_CACHE_FILE),
       { recursive: true }
     );
 
     fs.writeFileSync(
-      CACHE_FILE,
+      CATALOG_CACHE_FILE,
       JSON.stringify(
         {
           catalog,
@@ -1860,25 +1990,17 @@ async function loadServer1Catalog(options = {}) {
     );
   }
 
-  // ----------------------------------------------------------
-  // ⚡ UPDATE MEMORY
-  // ----------------------------------------------------------
-
   const result = {
     catalog,
     fromCache: false,
-    stale: Boolean(priceResult.stale),
+    stale: false,
   };
 
-  server1CatalogMemory =
-    result;
-
-  server1CatalogMemoryAt =
-    Date.now();
+  server1CatalogMemory = result;
+  server1CatalogMemoryAt = Date.now();
 
   return result;
 }
-
 
 // ------------------------------------------------------------
 // 🔄 SERVER 1 BACKGROUND AUTO REFRESH
@@ -1888,47 +2010,320 @@ const SERVER1_AUTO_REFRESH_INTERVAL = 5 * 60 * 1000;
 
 let server1AutoRefreshTimer = null;
 
+async function syncServer1PricesInBackground() {
+  logger.info(
+    "Server 1 background price sync started"
+  );
+
+  try {
+    // Get the latest provider prices.
+    const priceResult =
+      await getCachedGrizzlyPrices();
+
+    const root =
+      priceResult.prices &&
+      typeof priceResult.prices === "object"
+        ? priceResult.prices
+        : {};
+
+    // Resolve product countryId -> Grizzly countryCode.
+    const countries =
+      await db.listServer1Countries({
+        onlyEnabled: true,
+      });
+
+    const countryCodeById = new Map();
+
+    for (const country of countries) {
+      countryCodeById.set(
+        String(country.id),
+        String(
+          country.countryCode || ""
+        ).trim()
+      );
+    }
+
+    const priceItems =
+      buildGrizzlyPriceItems(
+        root,
+        countries
+      );
+
+    if (!priceItems.length) {
+      logger.warn(
+        "Server 1 background price sync: no valid Grizzly prices found"
+      );
+      return;
+    }
+
+    const result =
+      await syncServer1ProviderPrices(
+        priceItems,
+        countryCodeById
+      );
+
+    logger.info(
+      `Server 1 background price sync completed: checked=${result.checked}, changed=${result.changed}, unchanged=${result.unchanged}`
+    );
+
+    // Provider price + stock/retry values are kept in the local
+    // catalog cache. Firestore is updated only when provider price changes.
+    if (
+      result.changed > 0 ||
+      Number(result.stockChanged || 0) > 0
+    ) {
+      try {
+        let cachedCatalog = null;
+
+        // Prefer current memory cache.
+        if (
+          server1CatalogMemory &&
+          Array.isArray(server1CatalogMemory.catalog)
+        ) {
+          cachedCatalog = server1CatalogMemory.catalog;
+        }
+
+        // Otherwise load the existing catalog JSON cache.
+        if (
+          !cachedCatalog &&
+          fs.existsSync(CATALOG_CACHE_FILE)
+        ) {
+          const cached = JSON.parse(
+            fs.readFileSync(CATALOG_CACHE_FILE, "utf8")
+          );
+
+          if (
+            cached &&
+            Array.isArray(cached.catalog)
+          ) {
+            cachedCatalog = cached.catalog;
+          }
+        }
+
+        if (cachedCatalog) {
+          const providerById = new Map();
+
+          for (const item of result.providerProducts || []) {
+            providerById.set(
+              String(item.productId),
+              item
+            );
+          }
+
+          const changedById = new Map();
+
+          for (const item of result.changedProducts || []) {
+            changedById.set(
+              String(item.productId),
+              item
+            );
+          }
+
+          let cacheChanged = false;
+
+          for (const product of cachedCatalog) {
+            const productId = String(
+              product.id ||
+              product.productId ||
+              ""
+            );
+
+            const provider = providerById.get(productId);
+
+            if (!provider) {
+              continue;
+            }
+
+            const priceChange = changedById.get(productId);
+
+            if (priceChange) {
+              product.providerUsdPrice =
+                Number(priceChange.providerUsdPrice || 0);
+
+              product.apiCost =
+                Number(priceChange.providerUsdPrice || 0);
+
+              product.costInr =
+                Number(priceChange.costInr || 0);
+
+              product.finalPrice =
+                Number(priceChange.finalPrice || 0);
+
+              cacheChanged = true;
+            }
+
+            const newCount =
+              Number(provider.apiCount || 0);
+
+            const newRetry =
+              Number(provider.apiRetry || 0);
+
+            if (
+              Number(product.apiCount || 0) !== newCount ||
+              Number(product.apiRetry || 0) !== newRetry
+            ) {
+              product.apiCount = newCount;
+              product.apiRetry = newRetry;
+              cacheChanged = true;
+            }
+
+            product.cacheAt = Date.now();
+            product.cacheStale = false;
+          }
+
+          if (cacheChanged) {
+            // Re-apply the same catalog ranking after provider
+            // price/stock changes so the cached list stays ordered.
+            cachedCatalog.sort((a, b) => {
+              const aName =
+                String(a.countryName || "").toLowerCase();
+
+              const bName =
+                String(b.countryName || "").toLowerCase();
+
+              const aIndia =
+                aName === "india" ||
+                String(a.countryCode || "").toLowerCase() === "in";
+
+              const bIndia =
+                bName === "india" ||
+                String(b.countryCode || "").toLowerCase() === "in";
+
+              if (aIndia && !bIndia) return -1;
+              if (!aIndia && bIndia) return 1;
+
+              const aScore =
+                Number(a.salesScore || 0);
+
+              const bScore =
+                Number(b.salesScore || 0);
+
+              if (
+                Math.abs(aScore - bScore) > 0.01
+              ) {
+                return bScore - aScore;
+              }
+
+              const aSales =
+                Number(a.salesCount || 0);
+
+              const bSales =
+                Number(b.salesCount || 0);
+
+              if (aSales !== bSales) {
+                return bSales - aSales;
+              }
+
+              const aPrice =
+                Number(a.finalPrice || 0);
+
+              const bPrice =
+                Number(b.finalPrice || 0);
+
+              if (
+                Number.isFinite(aPrice) &&
+                Number.isFinite(bPrice) &&
+                aPrice !== bPrice
+              ) {
+                return aPrice - bPrice;
+              }
+
+              const aStock =
+                Number(a.apiCount || 0);
+
+              const bStock =
+                Number(b.apiCount || 0);
+
+              if (aStock !== bStock) {
+                return bStock - aStock;
+              }
+
+              return aName.localeCompare(bName);
+            });
+
+            const cacheResult = {
+              catalog: cachedCatalog,
+              fromCache: true,
+              stale: false,
+            };
+
+            server1CatalogMemory = cacheResult;
+            server1CatalogMemoryAt = Date.now();
+
+            fs.mkdirSync(
+              path.dirname(CATALOG_CACHE_FILE),
+              { recursive: true }
+            );
+
+            fs.writeFileSync(
+              CATALOG_CACHE_FILE,
+              JSON.stringify(
+                {
+                  catalog: cachedCatalog,
+                  cachedAt: Date.now(),
+                },
+                null,
+                2
+              ),
+              "utf8"
+            );
+
+            logger.info(
+              `Server 1 catalog cache updated: priceChanges=${result.changed}, stockChanges=${result.stockChanged || 0}`
+            );
+          }
+        } else {
+          logger.warn(
+            "Server 1 catalog cache unavailable; provider sync saved to Firestore where required"
+          );
+        }
+      } catch (cacheErr) {
+        logger.warn(
+          "Server 1 direct catalog cache update failed:",
+          cacheErr.message
+        );
+      }
+
+      return server1CatalogMemory;
+    }
+
+    return null;
+  } catch (err) {
+    logger.warn(
+      "Server 1 background price sync failed:",
+      err.message
+    );
+    return null;
+  }
+}
+
+
+
 function startServer1AutoRefresh() {
   if (server1AutoRefreshTimer) {
     return;
   }
 
   logger.info(
-    "Server 1 automatic background refresh started"
+    "Server 1 automatic background price sync started"
   );
 
-  server1AutoRefreshTimer = setInterval(async () => {
-    if (server1BackgroundRefreshPromise) {
-      logger.info(
-        "Server 1 refresh already running, skipping"
-      );
-      return;
-    }
-
-    server1BackgroundRefreshPromise = (async () => {
-      try {
+  server1AutoRefreshTimer =
+    setInterval(async () => {
+      if (server1BackgroundRefreshPromise) {
         logger.info(
-          "Server 1 automatic refresh started"
+          "Server 1 background sync already running, skipping"
         );
-
-        await loadServer1Catalog({
-          forceRefresh: true,
-          background: true,
-        });
-
-        logger.info(
-          "Server 1 automatic refresh completed"
-        );
-      } catch (err) {
-        logger.warn(
-          "Server 1 automatic refresh failed:",
-          err.message
-        );
-      } finally {
-        server1BackgroundRefreshPromise = null;
+        return;
       }
-    })();
-  }, SERVER1_AUTO_REFRESH_INTERVAL);
+
+      server1BackgroundRefreshPromise =
+        syncServer1PricesInBackground()
+          .finally(() => {
+            server1BackgroundRefreshPromise =
+              null;
+          });
+    }, SERVER1_AUTO_REFRESH_INTERVAL);
 }
 
 let server1LoadingGeneration = 0;
@@ -3131,6 +3526,48 @@ function registerServer1Handler(bot) {
           "Error in Server 1 buy flow",
           err
         );
+
+        if (err && err.code === "SERVER1_PRICE_CHANGED") {
+          await answer(
+            ctx,
+            "⚠️ Price changed. Please refresh the product and try again.",
+            true
+          );
+
+          try {
+            await editScreen(
+              ctx,
+              "⚠️ <b>Price Updated</b>\n\n" +
+              "The price of this country has changed.\n" +
+              "Please refresh the list and select the country again.",
+              {
+                reply_markup: {
+                  inline_keyboard: [
+                    [
+                      {
+                        text: "🔄 Refresh",
+                        callback_data: "server1:menu"
+                      }
+                    ],
+                    [
+                      {
+                        text: "🏠 Main Menu",
+                        callback_data: "menu_home"
+                      }
+                    ]
+                  ]
+                }
+              }
+            );
+          } catch (screenErr) {
+            logger.warn(
+              "Server 1 price-change screen update failed:",
+              screenErr.message
+            );
+          }
+
+          return;
+        }
 
         await answer(
           ctx,
