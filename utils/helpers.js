@@ -28,7 +28,7 @@ function formatDate(value) {
   try {
     const date = value && typeof value.toDate === "function" ? value.toDate() : new Date(value);
     if (Number.isNaN(date.getTime())) return "N/A";
-    return date.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+    return date.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata" });
   } catch {
     return "N/A";
   }
