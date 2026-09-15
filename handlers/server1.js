@@ -1692,6 +1692,19 @@ async function getCachedServer1SalesStats() {
 function invalidateServer1CatalogCache() {
   server1CatalogMemory = null;
   server1CatalogMemoryAt = 0;
+
+  // Also remove the persistent JSON cache so admin product
+  // changes are visible immediately on the next catalog load.
+  try {
+    if (fs.existsSync(CATALOG_CACHE_FILE)) {
+      fs.unlinkSync(CATALOG_CACHE_FILE);
+    }
+  } catch (err) {
+    logger.warn(
+      "Server 1 catalog cache invalidation failed:",
+      err.message
+    );
+  }
 }
 
 async function loadServer1Catalog(options = {}) {
@@ -2016,7 +2029,9 @@ async function syncServer1PricesInBackground() {
   );
 
   try {
-    // Get the latest provider prices.
+    // ----------------------------------------------------------
+    // 1. Get latest provider prices from Grizzly.
+    // ----------------------------------------------------------
     const priceResult =
       await getCachedGrizzlyPrices();
 
@@ -2026,11 +2041,112 @@ async function syncServer1PricesInBackground() {
         ? priceResult.prices
         : {};
 
-    // Resolve product countryId -> Grizzly countryCode.
-    const countries =
-      await db.listServer1Countries({
-        onlyEnabled: true,
-      });
+    // ----------------------------------------------------------
+    // 2. Load existing local catalog cache.
+    //
+    // Normal background refreshes use this cache instead of
+    // reading all Server 1 countries/products from Firestore.
+    // ----------------------------------------------------------
+    let cachedCatalog = null;
+
+    if (
+      server1CatalogMemory &&
+      Array.isArray(server1CatalogMemory.catalog) &&
+      server1CatalogMemory.catalog.length
+    ) {
+      cachedCatalog =
+        server1CatalogMemory.catalog;
+    }
+
+    if (!cachedCatalog && fs.existsSync(CATALOG_CACHE_FILE)) {
+      try {
+        const cached = JSON.parse(
+          fs.readFileSync(
+            CATALOG_CACHE_FILE,
+            "utf8"
+          )
+        );
+
+        if (
+          cached &&
+          Array.isArray(cached.catalog) &&
+          cached.catalog.length
+        ) {
+          cachedCatalog = cached.catalog;
+        }
+      } catch (cacheErr) {
+        logger.warn(
+          "Server 1 background catalog cache read failed:",
+          cacheErr.message
+        );
+      }
+    }
+
+    // ----------------------------------------------------------
+    // 3. Build unique country list from local catalog cache.
+    //
+    // The catalog already contains countryId, countryCode,
+    // countryName and emoji.
+    // ----------------------------------------------------------
+    let countries = [];
+
+    if (
+      Array.isArray(cachedCatalog) &&
+      cachedCatalog.length
+    ) {
+      const countryMap = new Map();
+
+      for (const item of cachedCatalog) {
+        if (!item) continue;
+
+        const countryId = String(
+          item.countryId || ""
+        ).trim();
+
+        const countryCode = String(
+          item.countryCode || ""
+        ).trim();
+
+        if (!countryId || !countryCode) {
+          continue;
+        }
+
+        if (!countryMap.has(countryId)) {
+          countryMap.set(countryId, {
+            id: countryId,
+            countryName:
+              item.countryName ||
+              item.name ||
+              "Unknown",
+            name:
+              item.countryName ||
+              item.name ||
+              "Unknown",
+            countryCode,
+            emoji:
+              item.emoji ||
+              "🌍",
+            status: "enabled",
+            provider: "grizzly",
+          });
+        }
+      }
+
+      countries = Array.from(countryMap.values());
+    }
+
+    // ----------------------------------------------------------
+    // 4. Fallback only when local catalog cache is unavailable.
+    //
+    // This keeps the system recoverable after a fresh deployment
+    // or cache loss.
+    // ----------------------------------------------------------
+    if (!countries.length) {
+      countries =
+        await db.listServer1Countries({
+          onlyEnabled: true,
+        });
+    }
 
     const countryCodeById = new Map();
 
@@ -2056,225 +2172,234 @@ async function syncServer1PricesInBackground() {
       return;
     }
 
+    // ----------------------------------------------------------
+    // 5. Compare provider prices against local catalog cache.
+    //
+    // Firestore is used only for actual changed prices.
+    // ----------------------------------------------------------
     const result =
       await syncServer1ProviderPrices(
         priceItems,
-        countryCodeById
+        countryCodeById,
+        cachedCatalog
       );
 
     logger.info(
-      `Server 1 background price sync completed: checked=${result.checked}, changed=${result.changed}, unchanged=${result.unchanged}`
+      `Server 1 background price sync completed: checked=${result.checked}, changed=${result.changed}, unchanged=${result.unchanged}, stockChanged=${result.stockChanged || 0}`
     );
 
-    // Provider price + stock/retry values are kept in the local
-    // catalog cache. Firestore is updated only when provider price changes.
+    // ----------------------------------------------------------
+    // 6. Update local catalog cache with latest provider
+    // price/stock/retry information.
+    // ----------------------------------------------------------
     if (
       result.changed > 0 ||
       Number(result.stockChanged || 0) > 0
     ) {
       try {
-        let cachedCatalog = null;
-
-        // Prefer current memory cache.
-        if (
-          server1CatalogMemory &&
-          Array.isArray(server1CatalogMemory.catalog)
-        ) {
-          cachedCatalog = server1CatalogMemory.catalog;
-        }
-
-        // Otherwise load the existing catalog JSON cache.
-        if (
-          !cachedCatalog &&
-          fs.existsSync(CATALOG_CACHE_FILE)
-        ) {
-          const cached = JSON.parse(
-            fs.readFileSync(CATALOG_CACHE_FILE, "utf8")
-          );
-
-          if (
-            cached &&
-            Array.isArray(cached.catalog)
-          ) {
-            cachedCatalog = cached.catalog;
-          }
-        }
-
-        if (cachedCatalog) {
-          const providerById = new Map();
-
-          for (const item of result.providerProducts || []) {
-            providerById.set(
-              String(item.productId),
-              item
-            );
-          }
-
-          const changedById = new Map();
-
-          for (const item of result.changedProducts || []) {
-            changedById.set(
-              String(item.productId),
-              item
-            );
-          }
-
-          let cacheChanged = false;
-
-          for (const product of cachedCatalog) {
-            const productId = String(
-              product.id ||
-              product.productId ||
-              ""
-            );
-
-            const provider = providerById.get(productId);
-
-            if (!provider) {
-              continue;
-            }
-
-            const priceChange = changedById.get(productId);
-
-            if (priceChange) {
-              product.providerUsdPrice =
-                Number(priceChange.providerUsdPrice || 0);
-
-              product.apiCost =
-                Number(priceChange.providerUsdPrice || 0);
-
-              product.costInr =
-                Number(priceChange.costInr || 0);
-
-              product.finalPrice =
-                Number(priceChange.finalPrice || 0);
-
-              cacheChanged = true;
-            }
-
-            const newCount =
-              Number(provider.apiCount || 0);
-
-            const newRetry =
-              Number(provider.apiRetry || 0);
-
-            if (
-              Number(product.apiCount || 0) !== newCount ||
-              Number(product.apiRetry || 0) !== newRetry
-            ) {
-              product.apiCount = newCount;
-              product.apiRetry = newRetry;
-              cacheChanged = true;
-            }
-
-            product.cacheAt = Date.now();
-            product.cacheStale = false;
-          }
-
-          if (cacheChanged) {
-            // Re-apply the same catalog ranking after provider
-            // price/stock changes so the cached list stays ordered.
-            cachedCatalog.sort((a, b) => {
-              const aName =
-                String(a.countryName || "").toLowerCase();
-
-              const bName =
-                String(b.countryName || "").toLowerCase();
-
-              const aIndia =
-                aName === "india" ||
-                String(a.countryCode || "").toLowerCase() === "in";
-
-              const bIndia =
-                bName === "india" ||
-                String(b.countryCode || "").toLowerCase() === "in";
-
-              if (aIndia && !bIndia) return -1;
-              if (!aIndia && bIndia) return 1;
-
-              const aScore =
-                Number(a.salesScore || 0);
-
-              const bScore =
-                Number(b.salesScore || 0);
-
-              if (
-                Math.abs(aScore - bScore) > 0.01
-              ) {
-                return bScore - aScore;
-              }
-
-              const aSales =
-                Number(a.salesCount || 0);
-
-              const bSales =
-                Number(b.salesCount || 0);
-
-              if (aSales !== bSales) {
-                return bSales - aSales;
-              }
-
-              const aPrice =
-                Number(a.finalPrice || 0);
-
-              const bPrice =
-                Number(b.finalPrice || 0);
-
-              if (
-                Number.isFinite(aPrice) &&
-                Number.isFinite(bPrice) &&
-                aPrice !== bPrice
-              ) {
-                return aPrice - bPrice;
-              }
-
-              const aStock =
-                Number(a.apiCount || 0);
-
-              const bStock =
-                Number(b.apiCount || 0);
-
-              if (aStock !== bStock) {
-                return bStock - aStock;
-              }
-
-              return aName.localeCompare(bName);
-            });
-
-            const cacheResult = {
-              catalog: cachedCatalog,
-              fromCache: true,
-              stale: false,
-            };
-
-            server1CatalogMemory = cacheResult;
-            server1CatalogMemoryAt = Date.now();
-
-            fs.mkdirSync(
-              path.dirname(CATALOG_CACHE_FILE),
-              { recursive: true }
-            );
-
-            fs.writeFileSync(
-              CATALOG_CACHE_FILE,
-              JSON.stringify(
-                {
-                  catalog: cachedCatalog,
-                  cachedAt: Date.now(),
-                },
-                null,
-                2
-              ),
-              "utf8"
-            );
-
-            logger.info(
-              `Server 1 catalog cache updated: priceChanges=${result.changed}, stockChanges=${result.stockChanged || 0}`
-            );
-          }
-        } else {
+        if (!Array.isArray(cachedCatalog)) {
           logger.warn(
             "Server 1 catalog cache unavailable; provider sync saved to Firestore where required"
+          );
+          return server1CatalogMemory;
+        }
+
+        const providerById = new Map();
+
+        for (
+          const item of result.providerProducts || []
+        ) {
+          providerById.set(
+            String(item.productId),
+            item
+          );
+        }
+
+        const changedById = new Map();
+
+        for (
+          const item of result.changedProducts || []
+        ) {
+          changedById.set(
+            String(item.productId),
+            item
+          );
+        }
+
+        let cacheChanged = false;
+
+        for (const product of cachedCatalog) {
+          const productId = String(
+            product.id ||
+            product.productId ||
+            ""
+          );
+
+          const provider =
+            providerById.get(productId);
+
+          if (!provider) {
+            continue;
+          }
+
+          const priceChange =
+            changedById.get(productId);
+
+          if (priceChange) {
+            product.providerUsdPrice =
+              Number(
+                priceChange.providerUsdPrice || 0
+              );
+
+            product.apiCost =
+              Number(
+                priceChange.providerUsdPrice || 0
+              );
+
+            product.costInr =
+              Number(
+                priceChange.costInr || 0
+              );
+
+            product.finalPrice =
+              Number(
+                priceChange.finalPrice || 0
+              );
+
+            cacheChanged = true;
+          }
+
+          const newCount =
+            Number(provider.apiCount || 0);
+
+          const newRetry =
+            Number(provider.apiRetry || 0);
+
+          if (
+            Number(product.apiCount || 0) !==
+              newCount ||
+            Number(product.apiRetry || 0) !==
+              newRetry
+          ) {
+            product.apiCount = newCount;
+            product.apiRetry = newRetry;
+            cacheChanged = true;
+          }
+
+          product.cacheAt = Date.now();
+          product.cacheStale = false;
+        }
+
+        if (cacheChanged) {
+          cachedCatalog.sort((a, b) => {
+            const aName =
+              String(
+                a.countryName || ""
+              ).toLowerCase();
+
+            const bName =
+              String(
+                b.countryName || ""
+              ).toLowerCase();
+
+            const aIndia =
+              aName === "india" ||
+              String(
+                a.countryCode || ""
+              ).toLowerCase() === "in";
+
+            const bIndia =
+              bName === "india" ||
+              String(
+                b.countryCode || ""
+              ).toLowerCase() === "in";
+
+            if (aIndia && !bIndia) return -1;
+            if (!aIndia && bIndia) return 1;
+
+            const aScore =
+              Number(a.salesScore || 0);
+
+            const bScore =
+              Number(b.salesScore || 0);
+
+            if (
+              Math.abs(aScore - bScore) > 0.01
+            ) {
+              return bScore - aScore;
+            }
+
+            const aSales =
+              Number(a.salesCount || 0);
+
+            const bSales =
+              Number(b.salesCount || 0);
+
+            if (aSales !== bSales) {
+              return bSales - aSales;
+            }
+
+            const aPrice =
+              Number(a.finalPrice || 0);
+
+            const bPrice =
+              Number(b.finalPrice || 0);
+
+            if (
+              Number.isFinite(aPrice) &&
+              Number.isFinite(bPrice) &&
+              aPrice !== bPrice
+            ) {
+              return aPrice - bPrice;
+            }
+
+            const aStock =
+              Number(a.apiCount || 0);
+
+            const bStock =
+              Number(b.apiCount || 0);
+
+            if (aStock !== bStock) {
+              return bStock - aStock;
+            }
+
+            return aName.localeCompare(bName);
+          });
+
+          const cacheResult = {
+            catalog: cachedCatalog,
+            fromCache: true,
+            stale: false,
+          };
+
+          server1CatalogMemory =
+            cacheResult;
+
+          server1CatalogMemoryAt =
+            Date.now();
+
+          fs.mkdirSync(
+            path.dirname(
+              CATALOG_CACHE_FILE
+            ),
+            { recursive: true }
+          );
+
+          fs.writeFileSync(
+            CATALOG_CACHE_FILE,
+            JSON.stringify(
+              {
+                catalog: cachedCatalog,
+                cachedAt: Date.now(),
+              },
+              null,
+              2
+            ),
+            "utf8"
+          );
+
+          logger.info(
+            `Server 1 catalog cache updated: priceChanges=${result.changed}, stockChanges=${result.stockChanged || 0}`
           );
         }
       } catch (cacheErr) {
@@ -2283,11 +2408,9 @@ async function syncServer1PricesInBackground() {
           cacheErr.message
         );
       }
-
-      return server1CatalogMemory;
     }
 
-    return null;
+    return server1CatalogMemory;
   } catch (err) {
     logger.warn(
       "Server 1 background price sync failed:",
@@ -2296,8 +2419,6 @@ async function syncServer1PricesInBackground() {
     return null;
   }
 }
-
-
 
 function startServer1AutoRefresh() {
   if (server1AutoRefreshTimer) {

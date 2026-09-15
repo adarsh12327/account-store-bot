@@ -1330,41 +1330,20 @@ async function updateProduct(productId, updates = {}) {
  */
 async function syncServer1ProviderPrices(
   priceItems = [],
-  countryCodeById = new Map()
+  countryCodeById = new Map(),
+  cachedCatalog = null
 ) {
   if (!Array.isArray(priceItems)) {
     throw new Error("SERVER1_PRICE_ITEMS_INVALID");
   }
 
-  const snap = await db
-    .collection(PRODUCTS)
-    .where("status", "==", "enabled")
-    .where("serviceCode", "==", "tg")
-    .get();
-
-  if (snap.empty) {
-    return {
-      checked: 0,
-      changed: 0,
-      stockChanged: 0,
-      unchanged: 0,
-      providerProducts: [],
-      changedProducts: [],
-    };
-  }
-
   const latestByCountry = new Map();
 
   for (const item of priceItems) {
-    if (!item || !item.countryCode) {
-      continue;
-    }
+    if (!item || !item.countryCode) continue;
 
     const cost = Number(item.cost);
-
-    if (!Number.isFinite(cost) || cost < 0) {
-      continue;
-    }
+    if (!Number.isFinite(cost) || cost < 0) continue;
 
     latestByCountry.set(
       String(item.countryCode).trim().toLowerCase(),
@@ -1382,135 +1361,285 @@ async function syncServer1ProviderPrices(
 
   let unchanged = 0;
   let stockChanged = 0;
+  let checked = 0;
 
-  for (const doc of snap.docs) {
-    const product = doc.data();
+  /*
+   * FAST PATH:
+   * Use the already-built local catalog cache.
+   *
+   * The catalog contains the product id, country code,
+   * provider price, USD rate and margin. Therefore we don't
+   * need to read every enabled TG product from Firestore
+   * on every background refresh.
+   */
+  if (Array.isArray(cachedCatalog) && cachedCatalog.length) {
+    for (const product of cachedCatalog) {
+      if (!product || product.status !== "enabled") continue;
+      if (product.serviceCode !== "tg") continue;
 
-    // Only API-priced products are synchronized.
-    if (product.priceMode !== "API") {
-      unchanged++;
-      continue;
-    }
+            // Manual-priced products must never be changed
+            // by automatic provider price synchronization.
+            if (product.priceMode !== "API") {
+              unchanged++;
+              continue;
+            }
 
-    const countryId = String(product.countryId || "");
+      const productId = String(
+        product.id || product.productId || ""
+      ).trim();
 
-    let countryCode = "";
+      const countryId = String(product.countryId || "").trim();
+      const countryCode = String(
+        product.countryCode || ""
+      ).trim().toLowerCase();
 
-    if (
-      countryCodeById &&
-      typeof countryCodeById.get === "function"
-    ) {
-      countryCode = String(
-        countryCodeById.get(countryId) || ""
-      );
-    } else if (
-      countryCodeById &&
-      typeof countryCodeById === "object"
-    ) {
-      countryCode = String(
-        countryCodeById[countryId] || ""
-      );
-    }
+      if (!productId || !countryCode) {
+        unchanged++;
+        continue;
+      }
 
-    if (!countryCode) {
-      unchanged++;
-      continue;
-    }
+      const live = latestByCountry.get(countryCode);
 
-    countryCode = countryCode.trim().toLowerCase();
+      if (!live) {
+        unchanged++;
+        continue;
+      }
 
-    const live = latestByCountry.get(countryCode);
+      checked++;
 
-    if (!live) {
-      unchanged++;
-      continue;
-    }
+      const oldUsd = Number(product.providerUsdPrice || 0);
+      const oldCount = Number(product.apiCount || 0);
+      const oldRetry = Number(product.apiRetry || 0);
 
-    const oldUsd = Number(product.providerUsdPrice || 0);
-    const oldCount = Number(product.apiCount || 0);
-    const oldRetry = Number(product.apiRetry || 0);
+      const liveCount = Number.isFinite(live.count)
+        ? live.count
+        : 0;
 
-    const priceChanged =
-      Math.abs(oldUsd - live.cost) >= 0.000001;
+      const liveRetry = Number.isFinite(live.retry)
+        ? live.retry
+        : 0;
 
-    const currentCount = Number.isFinite(oldCount)
-      ? oldCount
-      : 0;
+      const priceChanged =
+        Math.abs(oldUsd - live.cost) >= 0.000001;
 
-    const currentRetry = Number.isFinite(oldRetry)
-      ? oldRetry
-      : 0;
+      const currentStockChanged =
+        oldCount !== liveCount ||
+        oldRetry !== liveRetry;
 
-    const liveCount = Number.isFinite(live.count)
-      ? live.count
-      : 0;
+      if (currentStockChanged) {
+        stockChanged++;
+      }
 
-    const liveRetry = Number.isFinite(live.retry)
-      ? live.retry
-      : 0;
-
-    const currentStockChanged =
-      currentCount !== liveCount ||
-      currentRetry !== liveRetry;
-
-    if (currentStockChanged) {
-      stockChanged++;
-    }
-
-    // Return provider values for the local catalog cache.
-    // These are NOT written to Firestore unless the price changes.
-    providerProducts.push({
-      productId: String(doc.id),
-      countryId,
-      countryCode,
-      providerUsdPrice: live.cost,
-      apiCount: liveCount,
-      apiRetry: liveRetry,
-    });
-
-    // Price changed:
-    // update Firestore price + recalculated INR price.
-    if (priceChanged) {
-      const usdRate = Number(product.usdRate) || 0;
-      const marginPercent = Number(product.marginPercent) || 0;
-
-      const costInr = live.cost * usdRate;
-
-      const finalPrice =
-        costInr +
-        (costInr * marginPercent / 100);
-
-      const updateData = {
-        providerUsdPrice: live.cost,
-        costInr: Number(costInr.toFixed(2)),
-        finalPrice: Number(finalPrice.toFixed(2)),
-        updatedAt: FieldValue.serverTimestamp(),
-      };
-
-      updates.push({
-        ref: doc.ref,
-        data: updateData,
-      });
-
-      changedProducts.push({
-        productId: String(doc.id),
+      providerProducts.push({
+        productId,
         countryId,
         countryCode,
         providerUsdPrice: live.cost,
-        costInr: Number(costInr.toFixed(2)),
-        finalPrice: Number(finalPrice.toFixed(2)),
         apiCount: liveCount,
         apiRetry: liveRetry,
       });
 
-      continue;
+      if (!priceChanged) {
+        // Price is unchanged, but provider stock/retry changed.
+        // Persist only those changed provider values.
+        if (currentStockChanged) {
+          updates.push({
+            ref: db.collection(PRODUCTS).doc(productId),
+            data: {
+              apiCount: liveCount,
+              apiRetry: liveRetry,
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+          });
+        } else {
+          unchanged++;
+        }
+
+        continue;
+      }
+
+      /*
+       * Keep the existing pricing model:
+       * provider USD price -> INR using usdRate -> margin.
+       */
+      const usdRate = Number(product.usdRate) || 0;
+      const marginPercent = Number(product.marginPercent) || 0;
+
+      const costInr = live.cost * usdRate;
+      const finalPrice =
+        costInr + (costInr * marginPercent / 100);
+
+      const roundedCostInr = Number(costInr.toFixed(2));
+      const roundedFinalPrice = Number(finalPrice.toFixed(2));
+
+      updates.push({
+        ref: db.collection(PRODUCTS).doc(productId),
+        data: {
+          providerUsdPrice: live.cost,
+          costInr: roundedCostInr,
+          finalPrice: roundedFinalPrice,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+      });
+
+      changedProducts.push({
+        productId,
+        countryId,
+        countryCode,
+        providerUsdPrice: live.cost,
+        costInr: roundedCostInr,
+        finalPrice: roundedFinalPrice,
+        apiCount: liveCount,
+        apiRetry: liveRetry,
+      });
+    }
+  } else {
+    /*
+     * FALLBACK:
+     * If local catalog cache is unavailable, use Firestore once
+     * to rebuild the comparison source.
+     */
+    const snap = await db
+      .collection(PRODUCTS)
+      .where("status", "==", "enabled")
+      .where("serviceCode", "==", "tg")
+      .get();
+
+    if (snap.empty) {
+      return {
+        checked: 0,
+        changed: 0,
+        stockChanged: 0,
+        unchanged: 0,
+        providerProducts: [],
+        changedProducts: [],
+      };
     }
 
-    if (!currentStockChanged) {
-      unchanged++;
+    for (const doc of snap.docs) {
+      const product = doc.data();
+
+      if (product.priceMode !== "API") {
+        unchanged++;
+        continue;
+      }
+
+      const countryId = String(product.countryId || "");
+
+      let countryCode = "";
+
+      if (
+        countryCodeById &&
+        typeof countryCodeById.get === "function"
+      ) {
+        countryCode = String(
+          countryCodeById.get(countryId) || ""
+        );
+      } else if (
+        countryCodeById &&
+        typeof countryCodeById === "object"
+      ) {
+        countryCode = String(
+          countryCodeById[countryId] || ""
+        );
+      }
+
+      countryCode = countryCode.trim().toLowerCase();
+
+      if (!countryCode) {
+        unchanged++;
+        continue;
+      }
+
+      const live = latestByCountry.get(countryCode);
+
+      if (!live) {
+        unchanged++;
+        continue;
+      }
+
+      checked++;
+
+      const oldUsd = Number(product.providerUsdPrice || 0);
+      const oldCount = Number(product.apiCount || 0);
+      const oldRetry = Number(product.apiRetry || 0);
+
+      const liveCount = Number.isFinite(live.count)
+        ? live.count
+        : 0;
+
+      const liveRetry = Number.isFinite(live.retry)
+        ? live.retry
+        : 0;
+
+      const priceChanged =
+        Math.abs(oldUsd - live.cost) >= 0.000001;
+
+      const currentStockChanged =
+        oldCount !== liveCount ||
+        oldRetry !== liveRetry;
+
+      if (currentStockChanged) {
+        stockChanged++;
+      }
+
+      providerProducts.push({
+        productId: String(doc.id),
+        countryId,
+        countryCode,
+        providerUsdPrice: live.cost,
+        apiCount: liveCount,
+        apiRetry: liveRetry,
+      });
+
+      if (priceChanged) {
+        const usdRate = Number(product.usdRate) || 0;
+        const marginPercent =
+          Number(product.marginPercent) || 0;
+
+        const costInr = live.cost * usdRate;
+        const finalPrice =
+          costInr + (costInr * marginPercent / 100);
+
+        const roundedCostInr =
+          Number(costInr.toFixed(2));
+
+        const roundedFinalPrice =
+          Number(finalPrice.toFixed(2));
+
+        updates.push({
+          ref: doc.ref,
+          data: {
+            providerUsdPrice: live.cost,
+            costInr: roundedCostInr,
+            finalPrice: roundedFinalPrice,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+        });
+
+        changedProducts.push({
+          productId: String(doc.id),
+          countryId,
+          countryCode,
+          providerUsdPrice: live.cost,
+          costInr: roundedCostInr,
+          finalPrice: roundedFinalPrice,
+          apiCount: liveCount,
+          apiRetry: liveRetry,
+        });
+
+        continue;
+      }
+
+      if (!currentStockChanged) {
+        unchanged++;
+      }
     }
   }
 
+  /*
+   * Only actual provider-price changes are written to Firestore.
+   */
   if (updates.length) {
     const BATCH_SIZE = 400;
 
@@ -1523,10 +1652,7 @@ async function syncServer1ProviderPrices(
       const chunk = updates.slice(i, i + BATCH_SIZE);
 
       for (const item of chunk) {
-        batch.update(
-          item.ref,
-          item.data
-        );
+        batch.update(item.ref, item.data);
       }
 
       await batch.commit();
@@ -1534,7 +1660,7 @@ async function syncServer1ProviderPrices(
   }
 
   return {
-    checked: snap.size,
+    checked,
     changed: updates.length,
     stockChanged,
     unchanged,
@@ -1542,6 +1668,7 @@ async function syncServer1ProviderPrices(
     changedProducts,
   };
 }
+
 async function deleteProduct(productId) {
   await db.collection(PRODUCTS).doc(productId).delete();
 }
@@ -1815,47 +1942,109 @@ async function updateSettings(updates = {}) {
 // STATISTICS
 // ==================================================================
 
-async function getStatistics() {
-  const [
-    totalUsers,
-    totalProducts,
-    totalCountries,
-    totalProviders,
-    totalOrders,
-    pendingOrders,
-    completedOrders,
-    pendingDeposits,
-    approvedDeposits,
-    rejectedDeposits,
-    totalDepositAmount,
-  ] = await Promise.all([
-    countUsers(),
-    countProducts(),
-    countCountries(),
-    countProviders(),
-    countOrders(),
-    countOrdersByStatus("processing"),
-    countOrdersByStatus("completed"),
-    countDepositsByStatus("pending"),
-    countDepositsByStatus("approved"),
-    countDepositsByStatus("rejected"),
-    sumApprovedDepositAmount(),
-  ]);
+// Admin statistics are intentionally cached.
+// Admin Home does not need second-by-second counters.
+// This greatly reduces repeated Firestore AggregateQuery usage.
+const ADMIN_STATS_CACHE_TTL = 60 * 1000;
 
-  return {
-    totalUsers,
-    totalProducts,
-    totalCountries,
-    totalProviders,
-    totalOrders,
-    pendingOrders,
-    completedOrders,
-    pendingDeposits,
-    approvedDeposits,
-    rejectedDeposits,
-    totalDepositAmount,
-  };
+let adminStatisticsCache = null;
+let adminStatisticsCacheAt = 0;
+let adminStatisticsRefreshPromise = null;
+
+async function getStatistics() {
+  const now = Date.now();
+
+  // Fast path: return cached statistics.
+  if (
+    adminStatisticsCache &&
+    now - adminStatisticsCacheAt < ADMIN_STATS_CACHE_TTL
+  ) {
+    return adminStatisticsCache;
+  }
+
+  // Prevent multiple simultaneous Admin Home clicks from
+  // starting the same Firestore statistics queries.
+  if (adminStatisticsRefreshPromise) {
+    return adminStatisticsRefreshPromise;
+  }
+
+  adminStatisticsRefreshPromise = (async () => {
+    try {
+      /*
+       * Admin Home only displays these 7 values.
+       *
+       * The old implementation also queried:
+       * - processing orders
+       * - completed orders
+       * - approved deposits count
+       * - rejected deposits count
+       *
+       * Those values are not used by Admin Home, so those
+       * four Firestore queries are intentionally removed.
+       */
+      const [
+          totalUsers,
+          totalProducts,
+          totalCountries,
+          totalProviders,
+          totalOrders,
+          pendingOrders,
+          completedOrders,
+          pendingDeposits,
+          approvedDeposits,
+          rejectedDeposits,
+          totalDepositAmount,
+        ] = await Promise.all([
+          countUsers(),
+          countProducts(),
+          countCountries(),
+          countProviders(),
+          countOrders(),
+          countOrdersByStatus("processing"),
+          countOrdersByStatus("completed"),
+          countDepositsByStatus("pending"),
+          countDepositsByStatus("approved"),
+          countDepositsByStatus("rejected"),
+          sumApprovedDepositAmount(),
+        ]);
+
+      const stats = {
+        totalUsers,
+        totalProducts,
+        totalCountries,
+        totalProviders,
+        totalOrders,
+
+        pendingOrders,
+          completedOrders,
+          pendingDeposits,
+          approvedDeposits,
+          rejectedDeposits,
+          totalDepositAmount,
+      };
+
+      adminStatisticsCache = stats;
+      adminStatisticsCacheAt = Date.now();
+
+      return stats;
+    } catch (err) {
+      /*
+       * If Firestore quota is temporarily exhausted but an older
+       * cache exists, keep Admin Home usable instead of failing.
+       */
+      if (adminStatisticsCache) {
+        return adminStatisticsCache;
+      }
+
+      throw err;
+    } finally {
+      adminStatisticsRefreshPromise = null;
+    }
+  })();
+
+  return adminStatisticsRefreshPromise;
 }
+
 async function listUsers(limit = 10, offset = 0) {
   const snap = await db
     .collection(USERS)
