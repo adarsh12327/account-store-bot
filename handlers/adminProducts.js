@@ -127,29 +127,199 @@ function registerAdminProductsHandler(bot) {
   // PRODUCT LIST / SEARCH / PAGINATION
   // ==========================================================
 
+  // ==========================================================
+  // SMART PRODUCT SEARCH
+  // ==========================================================
+
+  function normalizeSearchText(value) {
+    return String(value || "")
+      .normalize("NFKC")
+      .toLowerCase()
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function searchTokens(value) {
+    return normalizeSearchText(value)
+      .split(" ")
+      .map((token) => token.trim())
+      .filter(Boolean);
+  }
+
+  function getCountrySearchNames(country) {
+    if (!country) return [];
+
+    const names = [
+      country.name,
+      country.countryName,
+      country.country,
+      country.countryCode,
+      country.code,
+      country.isoCode,
+      country.iso2,
+      country.iso3,
+      country.id,
+      country.countryId,
+    ];
+
+    return names
+      .filter(Boolean)
+      .map(normalizeSearchText)
+      .filter(Boolean);
+  }
+
+  function buildCountrySearchMap(countries = []) {
+    const map = new Map();
+
+    for (const country of countries) {
+      if (!country) continue;
+
+      const aliases = [
+        country.id,
+        country.countryId,
+        country.countryCode,
+        country.country,
+        country.name,
+        country.countryName,
+        country.code,
+        country.isoCode,
+        country.iso2,
+        country.iso3,
+      ];
+
+      for (const alias of aliases) {
+        if (alias !== undefined && alias !== null) {
+          const key = normalizeSearchText(alias);
+
+          if (key) {
+            map.set(key, country);
+          }
+
+          // Also keep the raw identifier for product.countryId lookup.
+          map.set(String(alias), country);
+        }
+      }
+    }
+
+    return map;
+  }
+
+  function getSmartSearchText(product, countryMap) {
+    const countryId = String(
+      product.countryId || ""
+    );
+
+    const countryCode = normalizeSearchText(
+      product.countryCode || ""
+    );
+
+    const country =
+      countryMap.get(countryId) ||
+      countryMap.get(countryCode) ||
+      countryMap.get(
+        normalizeSearchText(product.countryName || "")
+      );
+
+    const values = [
+      product.name,
+      product.countryName,
+      product.country,
+      product.serviceCode,
+      product.providerId,
+      product.countryId,
+      product.countryCode,
+      product.code,
+      ...getCountrySearchNames(country),
+    ];
+
+    return normalizeSearchText(values.filter(Boolean).join(" "));
+  }
+
+  function smartProductFilter(products, query, countryMap) {
+    const normalizedQuery = normalizeSearchText(query);
+
+    if (!normalizedQuery) {
+      return products;
+    }
+
+    const queryTokens = searchTokens(normalizedQuery);
+
+    return products.filter((product) => {
+      const searchable = getSmartSearchText(
+        product,
+        countryMap
+      );
+
+      // Full phrase match gets priority naturally.
+      if (searchable.includes(normalizedQuery)) {
+        return true;
+      }
+
+      // Every search word must be present somewhere.
+      return queryTokens.every((token) =>
+        searchable.includes(token)
+      );
+    });
+  }
+
   async function showProductList(ctx, page = 1, search = "") {
     const allProducts = await db.listProducts();
 
-    const query = String(search || "")
-      .trim()
-      .toLowerCase();
+    const query = normalizeSearchText(search);
 
-    const filtered = query
-      ? allProducts.filter((p) => {
-          const text = [
-            p.name,
-            p.countryName,
-            p.serviceCode,
-            p.providerId,
-            p.countryId,
-          ]
-            .filter(Boolean)
-            .join(" ")
-            .toLowerCase();
+    // Load the real country collection so search works even
+    // when countryName is not stored inside the product document.
+    let searchCountries = [];
 
-          return text.includes(query);
-        })
-      : allProducts;
+    try {
+      searchCountries = await db.listServer1Countries({
+        onlyEnabled: false,
+      });
+    } catch (err) {
+      logger.warn(
+        "Admin product search: country loading failed:",
+        err.message
+      );
+    }
+
+    const initialCountryMap =
+      buildCountrySearchMap(searchCountries);
+
+    // Product fields are also added as fallback aliases.
+    for (const product of allProducts) {
+      if (product.countryId != null) {
+        const key = String(product.countryId);
+
+        if (!initialCountryMap.has(key)) {
+          initialCountryMap.set(key, {
+            id: product.countryId,
+            countryName: product.countryName,
+            name: product.countryName,
+            countryCode: product.countryCode,
+          });
+        }
+      }
+
+      if (product.countryCode != null) {
+        const key = normalizeSearchText(product.countryCode);
+
+        if (!initialCountryMap.has(key)) {
+          initialCountryMap.set(key, {
+            id: product.countryCode,
+            countryName: product.countryName,
+            name: product.countryName,
+            countryCode: product.countryCode,
+          });
+        }
+      }
+    }
+
+    const filtered = smartProductFilter(
+      allProducts,
+      query,
+      initialCountryMap
+    );
 
     const PAGE_SIZE = 40;
 
@@ -437,6 +607,10 @@ function registerAdminProductsHandler(bot) {
 
         // Fast Firestore batch deletion.
         const deleted = await db.deleteAllProducts();
+
+        // All products are gone from Firestore.
+        // Clear the Server 1 catalog immediately.
+        invalidateServer1CatalogCache();
 
         await ctx.editMessageText(
           "✅ <b>All Products Deleted</b>\n\n" +
@@ -1632,6 +1806,11 @@ function registerAdminProductsHandler(bot) {
       await ctx.answerCbQuery("Deleted");
       if (!(await requireAdmin(ctx))) return;
       await db.deleteProduct(ctx.match[1]);
+
+      // Product was deleted from Firestore.
+      // Invalidate both memory + persistent Server 1 catalog cache.
+      invalidateServer1CatalogCache();
+
       await ctx.editMessageText(
   "❌ Product deleted.",
   productsMenu()
@@ -1660,24 +1839,65 @@ function registerAdminProductsHandler(bot) {
 
       const allProducts = await db.listProducts();
 
-      const search = query.toLowerCase();
+      // Load the real country collection. This allows searches
+      // such as India, Canada, USA, IN, CA, etc. even when
+      // product.countryName is missing.
+      let countries = [];
 
-      const filtered = allProducts.filter((p) => {
-        const text = [
-          p.name,
-          p.countryName,
-          p.serviceCode,
-          p.providerId,
-          p.countryId,
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
+      try {
+        countries = await db.listServer1Countries({
+          onlyEnabled: false,
+        });
+      } catch (err) {
+        logger.warn(
+          "Admin product search: country loading failed:",
+          err.message
+        );
+      }
 
-        return text.includes(search);
-      });
+      const countryMap =
+        buildCountrySearchMap(countries);
 
-      const PAGE_SIZE = 30;
+      // Product fields remain as fallback search aliases.
+      for (const product of allProducts) {
+        if (product.countryId != null) {
+          const key = String(product.countryId);
+
+          if (!countryMap.has(key)) {
+            countryMap.set(key, {
+              id: product.countryId,
+              countryName: product.countryName,
+              name: product.countryName,
+              countryCode: product.countryCode,
+            });
+          }
+        }
+
+        if (product.countryCode != null) {
+          const key = normalizeSearchText(
+            product.countryCode
+          );
+
+          if (!countryMap.has(key)) {
+            countryMap.set(key, {
+              id: product.countryCode,
+              countryName: product.countryName,
+              name: product.countryName,
+              countryCode: product.countryCode,
+            });
+          }
+        }
+      }
+
+      const search = normalizeSearchText(query);
+
+      const filtered = smartProductFilter(
+        allProducts,
+        search,
+        countryMap
+      );
+
+      const PAGE_SIZE = 40;
 
       const pageProducts = filtered.slice(
         0,
