@@ -197,7 +197,7 @@ function productListKeyboard(
     navigation.push(
       Markup.button.callback(
         "⬅️ Previous",
-        `admin:products:page:${page - 1}:${encodeURIComponent(search || "")}`
+        `admin:products:page:${page - 1}${search ? `:${encodeURIComponent(search)}` : ""}`
       )
     );
   }
@@ -206,7 +206,7 @@ function productListKeyboard(
     navigation.push(
       Markup.button.callback(
         "Next ➡️",
-        `admin:products:page:${page + 1}:${encodeURIComponent(search || "")}`
+        `admin:products:page:${page + 1}${search ? `:${encodeURIComponent(search)}` : ""}`
       )
     );
   }
