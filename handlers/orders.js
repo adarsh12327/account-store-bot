@@ -4,6 +4,7 @@
  * 📦 My Orders: list + detail view.
  *
  * Navigation edits the existing Telegram message.
+ * Includes both legacy store orders and Server 1 orders.
  * ------------------------------------------------------------------
  */
 
@@ -20,7 +21,6 @@ const {
   ordersListKeyboard,
   backToMenu,
 } = require("../keyboards/user");
-
 
 async function editScreen(ctx, text, keyboard = null) {
   const options = {
@@ -42,6 +42,47 @@ async function editScreen(ctx, text, keyboard = null) {
   }
 }
 
+function orderTime(order) {
+  const value = order.createdAt;
+  if (value?.toMillis) return value.toMillis();
+  if (value?.toDate) return value.toDate().getTime();
+
+  const parsed = new Date(value || 0).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeServer1Order(order) {
+  return {
+    ...order,
+    orderId: String(order.orderId),
+    productName: `Telegram — ${order.countryName || "Unknown"}`,
+    amount: Number(order.amount || 0),
+    status: String(order.status || "unknown"),
+  };
+}
+
+function buildServer1OrderDetail(order) {
+  const status = escapeHtml(order.status || "unknown");
+  const country = escapeHtml(order.countryName || "Unknown");
+  const number = escapeHtml(order.phoneNumber || "Not assigned");
+
+  let delivery = "";
+
+  if (order.status === "completed" && order.deliveryInfo) {
+    delivery = `\n\n📩 <b>Delivery Info</b>\n${escapeHtml(order.deliveryInfo)}`;
+  }
+
+  return (
+    `📦 <b>Server 1 Order Details</b>\n\n` +
+    `📱 Service: <b>Telegram</b>\n` +
+    `🌍 Country: <b>${country}</b>\n` +
+    `💰 Amount: ₹${formatAmount(order.amount)}\n` +
+    `📌 Status: <b>${status}</b>\n` +
+    `📞 Number: <code>${number}</code>\n` +
+    `🕒 Placed: ${formatDate(order.createdAt)}` +
+    delivery
+  );
+}
 
 function registerOrdersHandler(bot) {
 
@@ -53,11 +94,18 @@ function registerOrdersHandler(bot) {
     try {
       await ctx.answerCbQuery();
 
-      const orders =
-        await db.listUserOrders(
-          ctx.from.id,
-          10
-        );
+      const userId = String(ctx.from.id);
+
+      const [legacyOrders, server1OrdersRaw] = await Promise.all([
+        db.listUserOrders(userId, 10),
+        db.listUserServer1Orders(userId, 10, 0),
+      ]);
+
+      const server1Orders = server1OrdersRaw.map(normalizeServer1Order);
+
+      const orders = [...legacyOrders, ...server1Orders]
+        .sort((a, b) => orderTime(b) - orderTime(a))
+        .slice(0, 10);
 
       if (orders.length === 0) {
         await editScreen(
@@ -96,52 +144,61 @@ function registerOrdersHandler(bot) {
     try {
       await ctx.answerCbQuery();
 
-      const orderId =
-        ctx.match[1];
+      const orderId = ctx.match[1];
+      const userId = String(ctx.from.id);
 
-      const order =
-        await db.getOrder(orderId);
+      // First check the legacy orders collection.
+      const legacyOrder = await db.getOrder(orderId);
 
+      if (legacyOrder) {
+        if (String(legacyOrder.userId) !== userId) {
+          await editScreen(
+            ctx,
+            "❌ <b>Order Not Found</b>\n\nThis order does not exist or does not belong to you.",
+            backToMenu()
+          );
+          return;
+        }
 
-      // Security: user can only view their own order.
+        const text =
+          `📦 <b>Order Details</b>\n\n` +
+          `📱 Product: ${escapeHtml(legacyOrder.productName)}\n` +
+          `💰 Amount: ₹${formatAmount(legacyOrder.amount)}\n` +
+          `📌 Status: ${escapeHtml(legacyOrder.status)}\n` +
+          `🕒 Placed: ${formatDate(legacyOrder.createdAt)}` +
+          (
+            legacyOrder.status === "completed" &&
+            legacyOrder.deliveryInfo
+              ? `\n\n📩 <b>Delivery Info</b>\n${escapeHtml(legacyOrder.deliveryInfo)}`
+              : ""
+          );
+
+        await editScreen(ctx, text, backToMenu());
+        return;
+      }
+
+      // Server 1 orders live in a separate collection.
+      const server1Order = await db.getServer1Order(orderId);
+
       if (
-        !order ||
-        String(order.userId) !==
-          String(ctx.from.id)
+        !server1Order ||
+        String(server1Order.userId) !== userId
       ) {
-
         await editScreen(
           ctx,
           "❌ <b>Order Not Found</b>\n\nThis order does not exist or does not belong to you.",
           backToMenu()
         );
-
         return;
       }
 
-
-      const text =
-        `📦 <b>Order Details</b>\n\n` +
-        `📱 Product: ${escapeHtml(order.productName)}\n` +
-        `💰 Amount: ₹${formatAmount(order.amount)}\n` +
-        `📌 Status: ${escapeHtml(order.status)}\n` +
-        `🕒 Placed: ${formatDate(order.createdAt)}` +
-        (
-          order.status === "completed" &&
-          order.deliveryInfo
-            ? `\n\n📩 <b>Delivery Info</b>\n${escapeHtml(order.deliveryInfo)}`
-            : ""
-        );
-
-
       await editScreen(
         ctx,
-        text,
+        buildServer1OrderDetail(server1Order),
         backToMenu()
       );
 
     } catch (err) {
-
       logger.error(
         "Error in order_view action",
         err
@@ -154,7 +211,6 @@ function registerOrdersHandler(bot) {
     }
   });
 }
-
 
 module.exports = {
   registerOrdersHandler,
