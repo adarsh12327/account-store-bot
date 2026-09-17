@@ -76,9 +76,19 @@ function registerReferralHandler(bot) {
 
       const settings = await db.getSettings();
 
-      const botUsername = String(settings.botUsername || "")
+      // Prefer the configured username, but automatically fall back to
+      // Telegram's real bot username. This keeps Refer & Earn working even
+      // when the admin has not manually saved botUsername in Firestore.
+      let botUsername = String(settings.botUsername || "")
         .replace(/^@/, "")
         .trim();
+
+      if (!botUsername) {
+        const botInfo = await bot.telegram.getMe();
+        botUsername = String(botInfo?.username || "")
+          .replace(/^@/, "")
+          .trim();
+      }
 
       if (!botUsername) {
         await editScreen(
