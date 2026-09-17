@@ -13,6 +13,11 @@ const SCOPES = [
 let gmailClient = null;
 
 function loadCredentials() {
+  if (process.env.GMAIL_CREDENTIALS_JSON) {
+    const parsed = JSON.parse(process.env.GMAIL_CREDENTIALS_JSON);
+    return parsed.installed || parsed.web || parsed;
+  }
+
   const data = JSON.parse(
     fs.readFileSync(CREDENTIALS_PATH, "utf8")
   );
@@ -20,20 +25,48 @@ function loadCredentials() {
   return data.installed || data.web;
 }
 
+function loadToken() {
+  if (process.env.GMAIL_TOKEN_JSON) {
+    return JSON.parse(process.env.GMAIL_TOKEN_JSON);
+  }
+
+  if (!fs.existsSync(TOKEN_PATH)) {
+    return null;
+  }
+
+  return JSON.parse(
+    fs.readFileSync(TOKEN_PATH, "utf8")
+  );
+}
+
 async function getGmailClient() {
   if (gmailClient) {
     return gmailClient;
   }
 
-  const credentials = loadCredentials();
+  let credentials;
+
+  try {
+    credentials = loadCredentials();
+  } catch (err) {
+    throw new Error(
+      "Gmail credentials are not configured. Set GMAIL_CREDENTIALS_JSON or provide credentials.json."
+    );
+  }
 
   if (!credentials) {
     throw new Error(
-      "Invalid credentials.json: installed/web OAuth config not found."
+      "Invalid Gmail OAuth credentials."
     );
   }
 
   const { client_id, client_secret, redirect_uris } = credentials;
+
+  if (!client_id || !client_secret) {
+    throw new Error(
+      "Invalid Gmail OAuth credentials: client_id/client_secret missing."
+    );
+  }
 
   const oauth2Client = new google.auth.OAuth2(
     client_id,
@@ -45,30 +78,35 @@ async function getGmailClient() {
   // Existing token
   // ----------------------------------------------------------
 
-  if (fs.existsSync(TOKEN_PATH)) {
-    const token = JSON.parse(
-      fs.readFileSync(TOKEN_PATH, "utf8")
-    );
+  const existingToken = loadToken();
 
-    oauth2Client.setCredentials(token);
+  if (existingToken) {
+    oauth2Client.setCredentials(existingToken);
 
-    // Force Google library to refresh the access token
-    // when required.
     oauth2Client.on("tokens", (tokens) => {
-      const current = JSON.parse(
-        fs.readFileSync(TOKEN_PATH, "utf8")
-      );
+      // Environment-variable deployments cannot persist env changes.
+      // The refresh token remains in the configured token, so only
+      // persist refreshed access tokens when a writable local file exists.
+      if (process.env.GMAIL_TOKEN_JSON) {
+        return;
+      }
 
-      const updated = {
-        ...current,
-        ...tokens,
-      };
+      try {
+        const current = fs.existsSync(TOKEN_PATH)
+          ? JSON.parse(fs.readFileSync(TOKEN_PATH, "utf8"))
+          : {};
 
-      fs.writeFileSync(
-        TOKEN_PATH,
-        JSON.stringify(updated, null, 2),
-        { mode: 0o600 }
-      );
+        const updated = {
+          ...current,
+          ...tokens,
+        };
+
+        fs.writeFileSync(
+          TOKEN_PATH,
+          JSON.stringify(updated, null, 2),
+          { mode: 0o600 }
+        );
+      } catch (_) {}
     });
 
     gmailClient = google.gmail({
