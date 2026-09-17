@@ -1,11 +1,8 @@
-
 /**
  * bot.js
  * ------------------------------------------------------------------
  * Telegram bot entry point. Wires up every handler module and runs
- * the central text-step dispatcher for multi-step flows (deposit,
- * admin add/edit forms, broadcast, etc). No business logic lives
- * directly in this file.
+ * the central text-step dispatcher for multi-step flows.
  * ------------------------------------------------------------------
  */
 require("dotenv").config();
@@ -14,6 +11,7 @@ const { Telegraf } = require("telegraf");
 const config = require("./config");
 const logger = require("./utils/logger");
 const session = require("./utils/session");
+const { accessGuard } = require("./utils/accessGuard");
 
 const { registerStartHandler } = require("./handlers/start");
 const { registerUserHandler } = require("./handlers/user");
@@ -23,6 +21,8 @@ const { registerOrdersHandler } = require("./handlers/orders");
 const { registerProductsHandler } = require("./handlers/products");
 const { registerSupportHandler } = require("./handlers/support");
 const { registerReferralHandler } = require("./handlers/referral");
+const { registerAdminPricingFixHandler } = require("./handlers/adminPricingFix");
+const { registerServer1OrderFiltersHandler } = require("./handlers/server1OrderFilters");
 
 const { registerAdminHandler } = require("./handlers/admin");
 const { registerAdminUsersHandler } = require("./handlers/adminUsers");
@@ -34,15 +34,16 @@ const { registerAdminOrdersHandler } = require("./handlers/adminOrders");
 const { registerAdminSettingsHandler } = require("./handlers/adminSettings");
 const { registerAdminBroadcastHandler } = require("./handlers/adminBroadcast");
 const { registerAdminStatsHandler } = require("./handlers/adminStats");
-const {
-  startFamAppWatcher,
-} = require("./utils/famappWatcher");
+const { startFamAppWatcher } = require("./utils/famappWatcher");
 
 const bot = new Telegraf(config.botToken);
 
-// Register all handlers. Handlers that expose multi-step text flows
-// return { textSteps }, which we merge into one lookup table used by
-// the global bot.on('text', ...) dispatcher below.
+// Global security/access middleware must run before all user handlers.
+// Admins and recovery routes (/start, /cancel, verify_join) are allowed
+// through by accessGuard itself.
+bot.use((ctx, next) => accessGuard(bot, ctx, next));
+
+// Register all handlers.
 registerStartHandler(bot);
 registerUserHandler(bot);
 registerWalletHandler(bot);
@@ -52,7 +53,11 @@ registerSupportHandler(bot);
 registerReferralHandler(bot);
 registerAdminHandler(bot);
 registerServer1Handler(bot);
+
+// These compatibility handlers intentionally register BEFORE the older
+// handlers so the corrected callbacks own their routes.
 const textStepRegistries = [
+  registerAdminPricingFixHandler(bot),
   registerDepositHandler(bot),
   registerAdminUsersHandler(bot),
   registerAdminCountriesHandler(bot),
@@ -61,11 +66,18 @@ const textStepRegistries = [
   registerAdminSettingsHandler(bot),
   registerAdminBroadcastHandler(bot),
 ];
+
+// Server 1 filter callbacks must be registered before the legacy order
+// module's dormant filter registrations.
+registerServer1OrderFiltersHandler(bot);
 registerAdminDepositsHandler(bot);
 textStepRegistries.push(registerAdminOrdersHandler(bot));
 registerAdminStatsHandler(bot);
 
-const textSteps = Object.assign({}, ...textStepRegistries.map((r) => r.textSteps));
+const textSteps = Object.assign(
+  {},
+  ...textStepRegistries.map((r) => r.textSteps)
+);
 
 // /cancel — universal escape hatch out of any multi-step flow.
 bot.command("cancel", async (ctx) => {
@@ -76,10 +88,10 @@ bot.command("cancel", async (ctx) => {
 // Central text dispatcher for every multi-step flow.
 bot.on("text", async (ctx) => {
   try {
-    if (ctx.message.text.startsWith("/")) return; // let command handlers deal with commands
+    if (ctx.message.text.startsWith("/")) return;
 
     const state = session.get(ctx.from.id);
-    if (!state || !state.step) return; // no active flow — ignore stray text
+    if (!state || !state.step) return;
 
     const stepHandler = textSteps[state.step];
     if (!stepHandler) {
@@ -100,14 +112,14 @@ bot.catch((err, ctx) => {
   ctx.reply("⚠️ Something went wrong. Please try again in a moment.").catch(() => {});
 });
 
-// Vercel uses Telegram Webhook mode.
-// Polling and long-running background watchers are intentionally
-// not started from this module.
 module.exports = { bot, textSteps };
 
-
-
 if (require.main === module) {
+  // Railway runs this file as a long-lived Node process. Start the
+  // Gmail watcher only in polling/worker mode, never when imported by
+  // a serverless webhook entry point.
+  startFamAppWatcher(bot);
+
   bot.launch()
     .then(() => console.log("[INFO] Telegram bot started in polling mode"))
     .catch((err) => {
