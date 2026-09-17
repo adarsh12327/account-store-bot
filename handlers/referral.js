@@ -29,6 +29,33 @@ async function editScreen(ctx, text, keyboard = null) {
   }
 }
 
+function getEffectiveOutboundRate(user, settings) {
+  const override = user?.referralRateOverride;
+
+  if (
+    override !== null &&
+    override !== undefined &&
+    override !== ""
+  ) {
+    const value = Number(override);
+    if (Number.isFinite(value) && value >= 0 && value <= 100) {
+      return Number(value.toFixed(2));
+    }
+  }
+
+  const globalRate = Number(settings?.referralPercent ?? 10);
+
+  if (
+    !Number.isFinite(globalRate) ||
+    globalRate < 0 ||
+    globalRate > 100
+  ) {
+    return 0;
+  }
+
+  return Number(globalRate.toFixed(2));
+}
+
 function registerReferralHandler(bot) {
   // ==========================================================
   // REFER & EARN
@@ -49,10 +76,9 @@ function registerReferralHandler(bot) {
 
       const settings = await db.getSettings();
 
-      const botUsername =
-        String(settings.botUsername || "")
-          .replace(/^@/, "")
-          .trim();
+      const botUsername = String(settings.botUsername || "")
+        .replace(/^@/, "")
+        .trim();
 
       if (!botUsername) {
         await editScreen(
@@ -65,18 +91,14 @@ function registerReferralHandler(bot) {
       const referralLink =
         `https://t.me/${botUsername}?start=${encodeURIComponent(String(ctx.from.id))}`;
 
-      // Use the referral rate already snapshotted for this user.
-      // This must match the rate used during deposit commission calculation.
-      const rate = Number(user.referralRate || 0);
+      // IMPORTANT: referralRate is the rate this user received from
+      // their own referrer. It is NOT the rate they earn from new
+      // users they refer. Use the outbound override/global rate here.
+      const rate = getEffectiveOutboundRate(user, settings);
 
-      const referralStats =
-        await db.getReferralStats(ctx.from.id);
-
-      const referredUsers =
-        Number(referralStats.referredUsers || 0);
-
-      const referralEarnings =
-        Number(referralStats.referralEarnings || 0);
+      const referralStats = await db.getReferralStats(ctx.from.id);
+      const referredUsers = Number(referralStats.referredUsers || 0);
+      const referralEarnings = Number(referralStats.referralEarnings || 0);
 
       const text =
         `👥 <b>Refer & Earn</b>\n\n` +
@@ -89,40 +111,33 @@ function registerReferralHandler(bot) {
         `${user.referrerId ? "Already assigned" : "None"}\n\n` +
         `Share your link with your friends to invite them.`;
 
-      await editScreen(
-        ctx,
-        text,
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                {
-                  text: "📤 Share Referral Link",
-                  url:
-                    `https://t.me/share/url?url=${encodeURIComponent(referralLink)}`
-                }
-              ],
-              [
-                {
-                  text: "🏠 Main Menu",
-                  callback_data: "menu_home"
-                }
-              ]
-            ]
-          }
-        }
-      );
-
+      await editScreen(ctx, text, {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "📤 Share Referral Link",
+                url: `https://t.me/share/url?url=${encodeURIComponent(referralLink)}`,
+              },
+            ],
+            [
+              {
+                text: "🏠 Main Menu",
+                callback_data: "menu_home",
+              },
+            ],
+          ],
+        },
+      });
     } catch (err) {
       logger.error(
         `Error in menu_referral action | user=${ctx.from?.id || "unknown"}`,
         err
       );
 
-      await ctx.answerCbQuery(
-        "Something went wrong.",
-        { show_alert: true }
-      ).catch(() => {});
+      await ctx
+        .answerCbQuery("Something went wrong.", { show_alert: true })
+        .catch(() => {});
     }
   });
 }
