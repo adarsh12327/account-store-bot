@@ -19,12 +19,65 @@ const logger = require("../utils/logger");
 const {
   isAdmin,
   isChannelMember,
+  escapeHtml,
 } = require("../utils/helpers");
 
 const {
   mainMenu,
   forceJoinKeyboard,
 } = require("../keyboards/user");
+
+
+/**
+ * Return the user's outbound referral rate.
+ * Admin override takes priority over the global referral rate.
+ */
+function getOutboundReferralRate(user, settings) {
+  const override = user?.referralRateOverride;
+
+  if (override !== null && override !== undefined && override !== "") {
+    const value = Number(override);
+    if (Number.isFinite(value) && value >= 0 && value <= 100) {
+      return Number(value.toFixed(2));
+    }
+  }
+
+  const globalRate = Number(settings?.referralPercent ?? 10);
+
+  if (
+    !Number.isFinite(globalRate) ||
+    globalRate < 0 ||
+    globalRate > 100
+  ) {
+    return 0;
+  }
+
+  return Number(globalRate.toFixed(2));
+}
+
+
+/**
+ * Resolve the configured Telegram bot username.
+ * Falls back to Telegram getMe() when it is not saved in settings.
+ */
+async function getBotUsername(ctx, settings) {
+  let botUsername = String(settings?.botUsername || "")
+    .replace(/^@/, "")
+    .trim();
+
+  if (!botUsername) {
+    try {
+      const botInfo = await ctx.telegram.getMe();
+      botUsername = String(botInfo?.username || "")
+        .replace(/^@/, "")
+        .trim();
+    } catch (err) {
+      logger.warn("Unable to resolve bot username for home referral link.");
+    }
+  }
+
+  return botUsername;
+}
 
 
 /**
@@ -41,10 +94,31 @@ async function showMainMenu(ctx, user = null, edit = false) {
   const firstName =
     ctx.from?.first_name || "there";
 
+  // Keep the home screen compact: welcome + referral information only.
+  let settings = {};
+  let referralUser = user;
+
+  try {
+    settings = await db.getSettings();
+    if (!referralUser) {
+      referralUser = await db.getUser(ctx.from.id);
+    }
+  } catch (err) {
+    logger.warn("Unable to load referral data for main menu.");
+  }
+
+  const rate = getOutboundReferralRate(referralUser, settings);
+  const botUsername = await getBotUsername(ctx, settings);
+  const referralLink = botUsername
+    ? `https://t.me/${botUsername}?start=${encodeURIComponent(String(ctx.from.id))}`
+    : "Referral link unavailable";
+
   const text =
-    `<b>Welcome back, ${firstName} 👋</b>\n\n` +
-    `Browse our available digital products with fast delivery.\n\n` +
-    `Select an option below to get started:`;
+    `<b>Welcome back, ${escapeHtml(firstName)} 👋</b>\n\n` +
+    `👥 <b>Refer & Earn</b>\n` +
+    `🎁 Earn <b>${rate}%</b> commission on every referred user's deposit.\n` +
+    `🔗 <b>Your Referral Link:</b>\n` +
+    `<code>${escapeHtml(referralLink)}</code>`;
 
   const keyboard =
     mainMenu(isAdmin(ctx.from.id));
