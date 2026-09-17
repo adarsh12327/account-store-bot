@@ -29,58 +29,6 @@ const {
 
 
 /**
- * Return the user's outbound referral rate.
- * Admin override takes priority over the global referral rate.
- */
-function getOutboundReferralRate(user, settings) {
-  const override = user?.referralRateOverride;
-
-  if (override !== null && override !== undefined && override !== "") {
-    const value = Number(override);
-    if (Number.isFinite(value) && value >= 0 && value <= 100) {
-      return Number(value.toFixed(2));
-    }
-  }
-
-  const globalRate = Number(settings?.referralPercent ?? 10);
-
-  if (
-    !Number.isFinite(globalRate) ||
-    globalRate < 0 ||
-    globalRate > 100
-  ) {
-    return 0;
-  }
-
-  return Number(globalRate.toFixed(2));
-}
-
-
-/**
- * Resolve the configured Telegram bot username.
- * Falls back to Telegram getMe() when it is not saved in settings.
- */
-async function getBotUsername(ctx, settings) {
-  let botUsername = String(settings?.botUsername || "")
-    .replace(/^@/, "")
-    .trim();
-
-  if (!botUsername) {
-    try {
-      const botInfo = await ctx.telegram.getMe();
-      botUsername = String(botInfo?.username || "")
-        .replace(/^@/, "")
-        .trim();
-    } catch (err) {
-      logger.warn("Unable to resolve bot username for home referral link.");
-    }
-  }
-
-  return botUsername;
-}
-
-
-/**
  * Show main menu.
  *
  * edit = false:
@@ -94,31 +42,42 @@ async function showMainMenu(ctx, user = null, edit = false) {
   const firstName =
     ctx.from?.first_name || "there";
 
-  // Keep the home screen compact: welcome + referral information only.
-  let settings = {};
-  let referralUser = user;
+  // Build the referral link directly on the home screen.
+  // The visible URL is also a clickable Telegram HTML link.
+  let botUsername = "";
 
   try {
-    settings = await db.getSettings();
-    if (!referralUser) {
-      referralUser = await db.getUser(ctx.from.id);
+    const settings = await db.getSettings();
+    botUsername = String(settings.botUsername || "")
+      .replace(/^@/, "")
+      .trim();
+
+    if (!botUsername) {
+      const botInfo = await ctx.telegram.getMe();
+      botUsername = String(botInfo?.username || "")
+        .replace(/^@/, "")
+        .trim();
     }
   } catch (err) {
-    logger.warn("Unable to load referral data for main menu.");
+    logger.warn("Unable to load bot username for home referral link.");
   }
 
-  const rate = getOutboundReferralRate(referralUser, settings);
-  const botUsername = await getBotUsername(ctx, settings);
-  const referralLink = botUsername
-    ? `https://t.me/${botUsername}?start=${encodeURIComponent(String(ctx.from.id))}`
-    : "Referral link unavailable";
+  let referralText =
+    `👥 <b>Refer &amp; Earn</b>\n` +
+    `🎁 Earn <b>10%</b> commission on every referred user's deposit.`;
+
+  if (botUsername) {
+    const referralLink =
+      `https://t.me/${botUsername}?start=${encodeURIComponent(String(ctx.from.id))}`;
+
+    referralText +=
+      `\n\n🔗 <b>Your Referral Link:</b>\n` +
+      `<a href="${referralLink}">${escapeHtml(referralLink)}</a>`;
+  }
 
   const text =
     `<b>Welcome back, ${escapeHtml(firstName)} 👋</b>\n\n` +
-    `👥 <b>Refer & Earn</b>\n` +
-    `🎁 Earn <b>${rate}%</b> commission on every referred user's deposit.\n` +
-    `🔗 <b>Your Referral Link:</b>\n` +
-    `<code>${escapeHtml(referralLink)}</code>`;
+    referralText;
 
   const keyboard =
     mainMenu(isAdmin(ctx.from.id));
@@ -143,15 +102,12 @@ async function showMainMenu(ctx, user = null, edit = false) {
       const message =
         String(err.message || "").toLowerCase();
 
-      // Message already contains exactly the same content.
       if (
         message.includes("message is not modified")
       ) {
         return true;
       }
 
-      // Some Telegram messages cannot be edited.
-      // Do NOT crash background processing.
       if (
         message.includes("message can't be edited") ||
         message.includes("message to edit not found") ||
@@ -198,10 +154,6 @@ async function runBackgroundStart(
 
   try {
 
-    // ----------------------------------------------------------
-    // USER
-    // ----------------------------------------------------------
-
     const user = await db.createUser(
       telegramId,
       {
@@ -212,11 +164,6 @@ async function runBackgroundStart(
       }
     );
 
-    // ----------------------------------------------------------
-    // REFERRAL REGISTRATION
-    // Only a genuinely new user can be attached to a referrer.
-    // The referral rate is snapshotted at registration time.
-    // ----------------------------------------------------------
     if (user?._isNewUser && startPayload) {
       try {
         const referralResult =
@@ -242,19 +189,12 @@ async function runBackgroundStart(
       }
     }
 
-    // ----------------------------------------------------------
-    // BANNED CHECK
-    // ----------------------------------------------------------
-
     if (user?.banned) {
-
       try {
-
         await ctx.telegram.deleteMessage(
           ctx.chat.id,
           menuMessage.message_id
         );
-
       } catch (_) {}
 
       await ctx.reply(
@@ -264,39 +204,21 @@ async function runBackgroundStart(
       return;
     }
 
-
-    // ----------------------------------------------------------
-    // SETTINGS
-    // ----------------------------------------------------------
-
     const settings =
       await db.getSettings();
 
-
-    // ----------------------------------------------------------
-    // ADMIN
-    // ----------------------------------------------------------
-
     const admin =
       isAdmin(telegramId);
-
-
-    // ----------------------------------------------------------
-    // MAINTENANCE
-    // ----------------------------------------------------------
 
     if (
       settings.maintenance &&
       !admin
     ) {
-
       try {
-
         await ctx.telegram.deleteMessage(
           ctx.chat.id,
           menuMessage.message_id
         );
-
       } catch (_) {}
 
       await ctx.reply(
@@ -307,16 +229,10 @@ async function runBackgroundStart(
       return;
     }
 
-
-    // ----------------------------------------------------------
-    // FORCE CHANNEL
-    // ----------------------------------------------------------
-
     if (
       settings.forceChannel &&
       !admin
     ) {
-
       const joined =
         await isChannelMember(
           bot,
@@ -324,18 +240,13 @@ async function runBackgroundStart(
           telegramId
         );
 
-
       if (!joined) {
-
         try {
-
           await ctx.telegram.deleteMessage(
             ctx.chat.id,
             menuMessage.message_id
           );
-
         } catch (_) {}
-
 
         await ctx.reply(
           "📢 You must join our channel before using this bot.",
@@ -348,18 +259,15 @@ async function runBackgroundStart(
       }
     }
 
-
     console.log(
       `[BACKGROUND] Start checks completed for ${telegramId}`
     );
 
   } catch (err) {
-
     logger.error(
       "Background /start error",
       err
     );
-
   }
 }
 
@@ -368,7 +276,6 @@ async function runBackgroundStart(
  * Register start-related handlers.
  */
 function registerStartHandler(bot) {
-
 
   // ==========================================================
   // /START
@@ -387,31 +294,18 @@ function registerStartHandler(bot) {
       const startPayload =
         String(ctx.startPayload || "").trim();
 
-
       console.log(
         `[START] ${telegramId} received`
       );
 
-
-      // ------------------------------------------------------
-      // INSTANT MENU
-      // ------------------------------------------------------
-
       const menuMessage =
         await showMainMenu(ctx);
-
 
       console.log(
         `[START] Menu sent in ${Date.now() - startedAt}ms`
       );
 
-
-      // ------------------------------------------------------
-      // BACKGROUND CHECKS
-      // ------------------------------------------------------
-
       setImmediate(() => {
-
         runBackgroundStart(
           bot,
           ctx,
@@ -419,16 +313,12 @@ function registerStartHandler(bot) {
           menuMessage,
           startPayload
         ).catch((err) => {
-
           logger.error(
             "Background start promise error",
             err
           );
-
         });
-
       });
-
 
     } catch (err) {
 
@@ -437,18 +327,13 @@ function registerStartHandler(bot) {
         err
       );
 
-
-
       try {
-
         await ctx.reply(
           "⚠️ Something went wrong. Please try /start again."
         );
-
       } catch (_) {}
     }
   });
-
 
   // ==========================================================
   // VERIFY JOIN
@@ -457,7 +342,6 @@ function registerStartHandler(bot) {
   bot.action("verify_join", async (ctx) => {
 
     try {
-
       const telegramId =
         ctx.from.id;
 
@@ -466,17 +350,13 @@ function registerStartHandler(bot) {
 
       await ctx.answerCbQuery();
 
-
       const settings =
         await db.getSettings();
 
-
       if (!settings.forceChannel) {
-
         await ctx.answerCbQuery(
           "✅ No channel verification is required."
         );
-
 
         await showMainMenu(
           ctx,
@@ -487,7 +367,6 @@ function registerStartHandler(bot) {
         return;
       }
 
-
       const joined =
         await isChannelMember(
           bot,
@@ -495,9 +374,7 @@ function registerStartHandler(bot) {
           telegramId
         );
 
-
       if (!joined) {
-
         await ctx.answerCbQuery(
           "❌ You haven't joined the channel yet.",
           {
@@ -508,17 +385,14 @@ function registerStartHandler(bot) {
         return;
       }
 
-
       await ctx.answerCbQuery(
         "✅ Verified!"
       );
-
 
       const user =
         await db.getUser(
           telegramId
         );
-
 
       await showMainMenu(
         ctx,
@@ -526,14 +400,11 @@ function registerStartHandler(bot) {
         true
       );
 
-
     } catch (err) {
-
       logger.error(
         "Error in verify_join action",
         err
       );
-
 
       await ctx.answerCbQuery(
         "⚠️ Something went wrong.",
@@ -543,7 +414,6 @@ function registerStartHandler(bot) {
       ).catch(() => {});
     }
   });
-
 
   // ==========================================================
   // SALES CHANNEL
@@ -598,7 +468,6 @@ function registerStartHandler(bot) {
     }
   });
 
-
   // ==========================================================
   // MAIN MENU
   // ==========================================================
@@ -606,27 +475,17 @@ function registerStartHandler(bot) {
   bot.action("menu_home", async (ctx) => {
 
     try {
-
-      // Immediately remove Telegram button loading.
       await ctx.answerCbQuery();
-
 
       const telegramId =
         ctx.from.id;
-
-      const startPayload =
-        String(ctx.startPayload || "").trim();
-
 
       const user =
         await db.getUser(
           telegramId
         );
 
-
       if (!user) {
-
-        // If user doesn't exist, still edit the message.
         await showMainMenu(
           ctx,
           null,
@@ -636,9 +495,7 @@ function registerStartHandler(bot) {
         return;
       }
 
-
       if (user.banned) {
-
         await ctx.answerCbQuery(
           "🚫 You are banned from using this bot.",
           {
@@ -649,23 +506,17 @@ function registerStartHandler(bot) {
         return;
       }
 
-
-      // IMPORTANT:
-      // true = EDIT CURRENT MESSAGE
       await showMainMenu(
         ctx,
         user,
         true
       );
 
-
     } catch (err) {
-
       logger.error(
         "Error in menu_home action",
         err
       );
-
 
       await ctx.answerCbQuery(
         "⚠️ Something went wrong.",
@@ -678,9 +529,6 @@ function registerStartHandler(bot) {
 }
 
 
-/**
- * Exports
- */
 module.exports = {
   registerStartHandler,
   showMainMenu,
