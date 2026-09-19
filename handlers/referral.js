@@ -124,9 +124,21 @@ function registerReferralHandler(bot) {
       // users they refer. Use the outbound override/global rate here.
       const rate = getEffectiveOutboundRate(user, settings);
 
-      const referralStats = await db.getReferralStats(ctx.from.id);
-      const referredUsers = Number(referralStats.referredUsers || 0);
-      const referralEarnings = Number(referralStats.referralEarnings || 0);
+      let referredUsers = 0;
+      let referralEarnings = 0;
+
+      try {
+        const referralStats = await db.getReferralStats(ctx.from.id);
+        referredUsers = Number(referralStats?.referredUsers || 0);
+        referralEarnings = Number(referralStats?.referralEarnings || 0);
+      } catch (statsErr) {
+        // The referral page must still open even if a statistics query
+        // temporarily fails. Link generation is independent of stats.
+        logger.error(
+          `Referral stats read failed | user=${ctx.from?.id || "unknown"}`,
+          statsErr
+        );
+      }
 
       const text =
         `👥 <b>Refer & Earn</b>\n\n` +
