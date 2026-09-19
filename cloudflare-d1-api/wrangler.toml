@@ -1,0 +1,12 @@
+name = "account-store-d1-api"
+main = "src/index.js"
+compatibility_date = "2026-09-19"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "account-store-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[vars]
+# Set this as a Worker secret instead of committing the real value:
+# D1_API_SECRET
