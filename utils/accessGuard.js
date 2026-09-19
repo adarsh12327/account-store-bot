@@ -199,21 +199,11 @@ async function showBlockedScreen(bot, ctx, telegramId) {
 async function fastCallbackAck(ctx) {
   if (!ctx.callbackQuery) return;
 
-  // Remove Telegram's callback spinner immediately.
-  // Do not let Firestore / access checks delay this.
+  // Acknowledge the tap immediately and remove Telegram's spinner.
+  // Do NOT edit the message to a permanent Loading screen here:
+  // if a downstream Firestore call fails, that screen would remain
+  // stuck forever. The actual handler owns the final message edit.
   await ctx.answerCbQuery().catch(() => {});
-
-  // Give the user an immediate visual response. The real handler will
-  // replace this same message as soon as its data is ready.
-  try {
-    await ctx.editMessageText(
-      "⏳ <b>Loading...</b>",
-      { parse_mode: "HTML" }
-    );
-  } catch (_) {
-    // Some callbacks may already have a non-editable message.
-    // The callback acknowledgement above is still enough.
-  }
 }
 
 async function accessGuard(bot, ctx, next) {
