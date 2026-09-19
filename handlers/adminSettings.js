@@ -121,8 +121,8 @@ function registerAdminSettingsHandler(bot) {
 
       await ctx.editMessageText(
         "💰 <b>Product Pricing</b>\n\n" +
-        `💱 USD Rate: <b>₹${Number(s.productUsdRate || 105).toFixed(2)}</b>\n` +
-        `📈 Profit Margin: <b>${Number(s.productMarginPercent || 30).toFixed(2)}%</b>\n\n` +
+        `💱 USD Rate: <b>₹${Number(s.usdRate || 105).toFixed(2)}</b>\n` +
+        `📈 Profit Margin: <b>${Number(s.profit || 0).toFixed(2)}%</b>\n\n` +
         "These values are used for automatic product pricing.",
         {
           parse_mode: "HTML",
@@ -510,6 +510,35 @@ function registerAdminSettingsHandler(bot) {
     }
   });
 
+
+  // ==============================================================
+  // PAYMENT QR
+  // ==============================================================
+
+  bot.action("admin:settings:upiQr", async (ctx) => {
+    try {
+      await ctx.answerCbQuery().catch(() => {});
+
+      if (!(await requireAdmin(ctx))) return;
+
+      session.set(ctx.from.id, {
+        step: "admin_settings_upiQr",
+        data: {},
+      });
+
+      await ctx.reply(
+        "📲 <b>Payment QR</b>\n\n" +
+        "Send the payment QR code photo now.\n\n" +
+        "This will replace the current QR code.",
+        {
+          parse_mode: "HTML",
+          ...cancelKeyboard(),
+        }
+      );
+    } catch (err) {
+      logger.error("Error opening Payment QR settings", err);
+    }
+  });
 
   // ==============================================================
   // SERVER ENABLE / DISABLE
