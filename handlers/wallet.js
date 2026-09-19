@@ -81,10 +81,14 @@ function registerWalletHandler(bot) {
     } catch (err) {
       logger.error("Error in menu_wallet action", err);
 
-      await ctx.answerCbQuery(
-        "Something went wrong.",
-        { show_alert: true }
+      await ctx.reply(
+        "💰 <b>Your Wallet</b>\n\n" +
+        "⚠️ Wallet data is temporarily unavailable.\n" +
+        "Please tap <b>My Wallet</b> again in a moment.",
+        { parse_mode: "HTML", ...backToMenu() }
       ).catch(() => {});
+
+      await ctx.answerCbQuery().catch(() => {});
     }
   });
 
