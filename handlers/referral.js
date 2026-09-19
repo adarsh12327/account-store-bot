@@ -85,6 +85,8 @@ function registerReferralHandler(bot) {
 
       // Resolve the bot username from the most reliable available source.
       // Do not make Refer & Earn depend on the optional Firestore setting.
+      const FALLBACK_BOT_USERNAME = "account_stores_bot";
+
       let botUsername = String(
         settings?.botUsername ||
         ctx.botInfo?.username ||
@@ -109,11 +111,7 @@ function registerReferralHandler(bot) {
       }
 
       if (!botUsername) {
-        await editScreen(
-          ctx,
-          "⚠️ <b>Referral link is temporarily unavailable.</b>\n\nPlease try again in a moment."
-        );
-        return;
+        botUsername = FALLBACK_BOT_USERNAME;
       }
 
       const referralLink =
