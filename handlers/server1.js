@@ -2498,6 +2498,44 @@ async function loadWithAnimation(ctx, loader) {
   }
 }
 
+function getInstantServer1Catalog() {
+  if (
+    server1CatalogMemory &&
+    Array.isArray(server1CatalogMemory.catalog) &&
+    server1CatalogMemory.catalog.length
+  ) {
+    return server1CatalogMemory;
+  }
+
+  try {
+    if (fs.existsSync(CATALOG_CACHE_FILE)) {
+      const cached = JSON.parse(
+        fs.readFileSync(CATALOG_CACHE_FILE, "utf8")
+      );
+
+      if (
+        cached &&
+        Array.isArray(cached.catalog) &&
+        cached.catalog.length
+      ) {
+        const result = {
+          catalog: cached.catalog,
+          fromCache: true,
+          stale: false,
+        };
+
+        server1CatalogMemory = result;
+        server1CatalogMemoryAt = Date.now();
+        return result;
+      }
+    }
+  } catch (err) {
+    logger.warn("Server 1 instant catalog cache read failed:", err.message);
+  }
+
+  return null;
+}
+
 // ------------------------------------------------------------
 // Main menu
 // ------------------------------------------------------------
@@ -2761,77 +2799,68 @@ function registerServer1Handler(bot) {
         // Acknowledge Telegram callback immediately.
         await answer(ctx);
 
-        const catalogStart = Date.now();
+        const instant = getInstantServer1Catalog();
 
-        logger.info(
-          `[SERVER1] Catalog loading started`
-        );
-
-        const result =
-          await loadServer1Catalog();
-
-        logger.info(
-          `[SERVER1] Catalog loading finished in ${Date.now() - catalogStart}ms`
-        );
-
-        const {
-          catalog,
-          fromCache,
-          stale,
-        } = result;
-
-        if (!catalog.length) {
-
+        if (!instant) {
           await editScreen(
             ctx,
-            `🖥️ <b>Server 1</b>\n\n` +
-            `📱 <b>Telegram</b>\n\n` +
-            `❌ No products available.`,
+            `🖥️ <b>Server 1</b>\n\n⏳ Preparing catalog...`,
             mainKeyboard()
-          );
+          ).catch(() => {});
+
+          setImmediate(async () => {
+            try {
+              const result = await loadServer1Catalog();
+              const { catalog, fromCache, stale } = result;
+
+              if (!catalog.length) {
+                await editScreen(
+                  ctx,
+                  `🖥️ <b>Server 1</b>\n\n📱 <b>Telegram</b>\n\n❌ No products available.`,
+                  mainKeyboard()
+                );
+                return;
+              }
+
+              const totalPages = Math.max(1, Math.ceil(catalog.length / PAGE_SIZE));
+              let cacheText = fromCache ? "⚡ Cached" : "🌐 Live";
+              if (stale) cacheText = "⚡ Cached (offline)";
+
+              await editScreen(
+                ctx,
+                `🖥️ <b>Server 1</b>\n\n📱 <b>Telegram</b>\n\n🌍 Total: <b>${catalog.length}</b>\n📄 Page: <b>1/${totalPages}</b>\n⚡ Data: <b>${cacheText}</b>\n\nSelect your country:`,
+                productListKeyboard(catalog, 1)
+              );
+            } catch (err) {
+              logger.error("Background Server 1 catalog load failed", err);
+              await editScreen(
+                ctx,
+                `🖥️ <b>Server 1</b>\n\n⚠️ Catalog is temporarily unavailable.\nPlease try again shortly.`,
+                mainKeyboard()
+              ).catch(() => {});
+            }
+          });
 
           return;
         }
 
-        const totalPages =
-          Math.max(
-            1,
-            Math.ceil(
-              catalog.length /
-              PAGE_SIZE
-            )
-          );
-
-        let cacheText =
-          fromCache
-            ? "⚡ Cached"
-            : "🌐 Live";
-
-        if (stale) {
-          cacheText =
-            "⚡ Cached (offline)";
-        }
+        const { catalog, fromCache, stale } = instant;
+        const totalPages = Math.max(1, Math.ceil(catalog.length / PAGE_SIZE));
+        let cacheText = fromCache ? "⚡ Cached" : "🌐 Live";
+        if (stale) cacheText = "⚡ Cached (offline)";
 
         await editScreen(
           ctx,
-
-          `🖥️ <b>Server 1</b>\n\n` +
-
-          `📱 <b>Telegram</b>\n\n` +
-
-          `🌍 Total: <b>${catalog.length}</b>\n` +
-
-          `📄 Page: <b>1/${totalPages}</b>\n` +
-
-          `⚡ Data: <b>${cacheText}</b>\n\n` +
-
-          `Select your country:`,
-
-          productListKeyboard(
-            catalog,
-            1
-          )
+          `🖥️ <b>Server 1</b>\n\n📱 <b>Telegram</b>\n\n🌍 Total: <b>${catalog.length}</b>\n📄 Page: <b>1/${totalPages}</b>\n⚡ Data: <b>${cacheText}</b>\n\nSelect your country:`,
+          productListKeyboard(catalog, 1)
         );
+
+        // Refresh the cache in the background; never block navigation.
+        setImmediate(() => {
+          loadServer1Catalog().catch((err) => {
+            logger.warn("Background Server 1 catalog refresh failed:", err.message);
+          });
+        });
 
       } catch (err) {
 
