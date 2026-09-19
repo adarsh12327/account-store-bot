@@ -14,10 +14,7 @@ function registerSupportHandler(bot) {
   bot.action("menu_support", async (ctx) => {
     try {
       await ctx.answerCbQuery();
-      const settings =
-        typeof db.getSettingsSnapshot === "function"
-          ? db.getSettingsSnapshot()
-          : {};
+      const settings = await db.getSettings();
 
       const text = settings.supportUsername
         ? `🆘 <b>Support</b>\n\nNeed help? Contact us: @${escapeHtml(settings.supportUsername)}`
