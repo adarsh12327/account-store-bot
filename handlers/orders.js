@@ -128,10 +128,15 @@ function registerOrdersHandler(bot) {
         err
       );
 
-      await ctx.answerCbQuery(
-        "Something went wrong.",
-        { show_alert: true }
+      await editScreen(
+        ctx,
+        "📦 <b>My Orders</b>\n\n" +
+        "⚠️ Orders are temporarily unavailable.\n" +
+        "Please try again in a moment.",
+        backToMenu()
       ).catch(() => {});
+
+      await ctx.answerCbQuery().catch(() => {});
     }
   });
 
