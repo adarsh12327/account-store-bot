@@ -235,7 +235,8 @@ function settingsMenu(settings = {}) {
     [Markup.button.callback("📢 Sales", "admin:settings:salesChannel"), Markup.button.callback("🆘 Support", "admin:settings:supportUsername")],
     [Markup.button.callback("💵 Min Deposit", "admin:settings:minimumDeposit"), Markup.button.callback("👥 Referral", "admin:settings:referral")],
     [Markup.button.callback("📊 Referral Stats", "admin:settings:referralStats"), Markup.button.callback("🏦 UPI ID", "admin:settings:upiId")],
-    [Markup.button.callback("⏳ OTP Wait", "admin:settings:server1OtpWait"), Markup.button.callback("🛠️ Maintenance", "admin:settings:toggleMaintenance")],
+    [Markup.button.callback("📲 Payment QR", "admin:settings:upiQr"), Markup.button.callback("⏳ OTP Wait", "admin:settings:server1OtpWait")],
+    [Markup.button.callback("🛠️ Maintenance", "admin:settings:toggleMaintenance")],
     [Markup.button.callback(`🖥️ S1 ${server1 ? "🟢 ON" : "🔴 OFF"}`, "admin:settings:toggleServer1"), Markup.button.callback(`🖥️ S2 ${server2 ? "🟢 ON" : "🔴 OFF"}`, "admin:settings:toggleServer2")],
     [Markup.button.callback("⬅️ Admin Home", "admin:home")],
   ]);
