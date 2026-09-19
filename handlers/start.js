@@ -42,61 +42,27 @@ async function showMainMenu(ctx, user = null, edit = false) {
   const firstName =
     ctx.from?.first_name || "there";
 
-  // Build the referral link directly on the home screen.
-  // Prefer Telegraf's cached botInfo, then configured username,
-  // and only then call Telegram getMe(). This keeps the home screen
-  // working even if a settings/API read temporarily fails.
-  let botUsername = "";
-  let referralRate = 10;
-  const FALLBACK_BOT_USERNAME = "account_stores_bot";
+  // Keep /start and Main Menu instant. Do not wait for Firestore here.
+  // The referral percentage is informational on the home screen; the
+  // actual commission is calculated from Firestore during deposit approval.
+  const botUsername = String(
+    ctx.botInfo?.username ||
+    ctx.telegram?.botInfo?.username ||
+    "account_stores_bot"
+  )
+    .replace(/^@/, "")
+    .trim();
 
-  try {
-    const settings = await db.getSettings();
+  const referralRate = 10;
 
-    referralRate = Number(settings?.referralPercent ?? 10);
-    if (!Number.isFinite(referralRate) || referralRate < 0 || referralRate > 100) {
-      referralRate = 10;
-    }
+  const referralLink =
+    `https://t.me/${botUsername}?start=${encodeURIComponent(String(ctx.from.id))}`;
 
-    botUsername = String(
-      settings?.botUsername ||
-      ctx.botInfo?.username ||
-      ctx.telegram?.botInfo?.username ||
-      ""
-    )
-      .replace(/^@/, "")
-      .trim();
-  } catch (err) {
-    logger.warn("Unable to load settings for home referral block.");
-  }
-
-  if (!botUsername) {
-    try {
-      const botInfo = await ctx.telegram.getMe();
-      botUsername = String(botInfo?.username || "")
-        .replace(/^@/, "")
-        .trim();
-    } catch (err) {
-      logger.warn("Unable to resolve Telegram bot username for home referral link.");
-    }
-  }
-
-  if (!botUsername) {
-    botUsername = FALLBACK_BOT_USERNAME;
-  }
-
-  let referralText =
+  const referralText =
     `👥 <b>Refer &amp; Earn</b>\n` +
-    `🎁 Earn <b>${referralRate}%</b> commission on every referred user's deposit.`;
-
-  if (botUsername) {
-    const referralLink =
-      `https://t.me/${botUsername}?start=${encodeURIComponent(String(ctx.from.id))}`;
-
-    referralText +=
-      `\n\n🔗 <b>Your Referral Link:</b>\n` +
-      `<a href="${referralLink}">${escapeHtml(referralLink)}</a>`;
-  }
+    `🎁 Earn <b>${referralRate}%</b> commission on every referred user's deposit.\n\n` +
+    `🔗 <b>Your Referral Link:</b>\n` +
+    `<a href="${referralLink}">${escapeHtml(referralLink)}</a>`;
 
   const text =
     `<b>Welcome back, ${escapeHtml(firstName)} 👋</b>\n\n` +
