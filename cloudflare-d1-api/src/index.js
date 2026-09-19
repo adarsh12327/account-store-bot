@@ -52,11 +52,28 @@ export default {
           .prepare("SELECT COUNT(*) AS count FROM firestore_documents")
           .first();
 
+        const settingsRow = await env.DB
+          .prepare("SELECT doc_id, data FROM firestore_documents WHERE collection = ? LIMIT 1")
+          .bind("settings")
+          .first();
+
+        let settingsKeys = [];
+        if (settingsRow?.data) {
+          try {
+            settingsKeys = Object.keys(JSON.parse(settingsRow.data));
+          } catch {}
+        }
+
         return json({
           ok: true,
           service: "account-store-d1",
           database: "connected",
           documents: Number(row?.count || 0),
+          settings: {
+            exists: Boolean(settingsRow),
+            docId: settingsRow?.doc_id || null,
+            keys: settingsKeys,
+          },
         });
       } catch (error) {
         return json({
