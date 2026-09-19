@@ -42,6 +42,7 @@ const {
   depositAdminKeyboard,
 } = require("../keyboards/admin");
 const { showMainMenu } = require("./start");
+const { checkFamAppPayments } = require("../utils/famappWatcher");
 
 
 function registerDepositHandler(bot) {
@@ -440,6 +441,17 @@ try {
       console.log(
         `[DEPOSIT] ${deposit.depositId} created for ${telegramId}`
       );
+
+      // FamApp is event-driven: do not keep a background watcher running.
+      // Start a check only after a new pending deposit is created.
+      setImmediate(() => {
+        checkFamAppPayments(bot).catch((err) => {
+          logger.error(
+            "Event-driven FamApp check failed",
+            err
+          );
+        });
+      });
 
 
     } catch (err) {
