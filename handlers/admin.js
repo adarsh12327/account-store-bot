@@ -81,7 +81,24 @@ function registerAdminHandler(bot) {
         // Ignore expired/invalid callback query
       }
       if (!(await requireAdmin(ctx))) return;
-      await showAdminHome(ctx);
+
+      // Admin navigation should acknowledge and render immediately.
+      await ctx.editMessageText(
+        "👨‍💼 <b>Admin Panel</b>\n\n⏳ Loading statistics...",
+        { parse_mode: "HTML", ...adminHome() }
+      ).catch(() => {});
+
+      setImmediate(async () => {
+        try {
+          await showAdminHome(ctx);
+        } catch (err) {
+          logger.error("Background admin home load failed", err);
+          await ctx.editMessageText(
+            "👨‍💼 <b>Admin Panel</b>\n\n⚠️ Statistics are temporarily unavailable.\nPlease try again shortly.",
+            { parse_mode: "HTML", ...adminHome() }
+          ).catch(() => {});
+        }
+      });
     } catch (err) {
       logger.error("Error in admin:home action", err);
       await ctx.answerCbQuery("Something went wrong.", { show_alert: true }).catch(() => {});
