@@ -62,122 +62,134 @@ function registerReferralHandler(bot) {
   // ==========================================================
   bot.action("menu_referral", async (ctx) => {
     try {
-      await ctx.answerCbQuery();
+      await ctx.answerCbQuery().catch(() => {});
 
-      let user = null;
+      const snapshotUser =
+        typeof db.getUserSnapshot === "function"
+          ? db.getUserSnapshot(ctx.from.id)
+          : null;
+      const snapshotSettings =
+        typeof db.getSettingsSnapshot === "function"
+          ? db.getSettingsSnapshot()
+          : {};
 
-      try {
-        user = await db.getUser(ctx.from.id);
-      } catch (userErr) {
-        logger.warn(
-          `Referral user read failed | user=${ctx.from?.id || "unknown"}`
-        );
-      }
-
-      // Referral navigation must remain usable even when Firestore is
-      // temporarily rate-limited. Use Telegram profile data for the
-      // display-only parts and zero stats until Firestore recovers.
-      user = user || {
-        telegramId: String(ctx.from.id),
-        firstName: ctx.from?.first_name || "",
-        lastName: ctx.from?.last_name || "",
-        username: ctx.from?.username || "",
-        referrerId: null,
-        referralRateOverride: null,
-      };
-
-      let settings = {};
-      try {
-        settings = await db.getSettings();
-      } catch (settingsErr) {
-        logger.warn(
-          `Referral settings read failed | user=${ctx.from?.id || "unknown"}`
-        );
-      }
-
-      // Resolve the bot username from the most reliable available source.
-      // Do not make Refer & Earn depend on the optional Firestore setting.
-      const FALLBACK_BOT_USERNAME = "account_stores_bot";
-
-      let botUsername = String(
-        settings?.botUsername ||
+      const botUsername = String(
+        snapshotSettings?.botUsername ||
         ctx.botInfo?.username ||
         ctx.telegram?.botInfo?.username ||
-        ""
-      )
-        .replace(/^@/, "")
-        .trim();
-
-      if (!botUsername) {
-        try {
-          const botInfo = await bot.telegram.getMe();
-          botUsername = String(botInfo?.username || "")
-            .replace(/^@/, "")
-            .trim();
-        } catch (usernameErr) {
-          logger.error(
-            `Unable to resolve bot username | user=${ctx.from?.id || "unknown"}`,
-            usernameErr
-          );
-        }
-      }
-
-      if (!botUsername) {
-        botUsername = FALLBACK_BOT_USERNAME;
-      }
+        "account_stores_bot"
+      ).replace(/^@/, "").trim();
 
       const referralLink =
         `https://t.me/${botUsername}?start=${encodeURIComponent(String(ctx.from.id))}`;
 
-      // IMPORTANT: referralRate is the rate this user received from
-      // their own referrer. It is NOT the rate they earn from new
-      // users they refer. Use the outbound override/global rate here.
-      const rate = getEffectiveOutboundRate(user, settings);
+      const rate = getEffectiveOutboundRate(
+        snapshotUser || { referralRateOverride: null },
+        snapshotSettings
+      );
 
-      let referredUsers = 0;
-      let referralEarnings = 0;
-
-      try {
-        const referralStats = await db.getReferralStats(ctx.from.id);
-        referredUsers = Number(referralStats?.referredUsers || 0);
-        referralEarnings = Number(referralStats?.referralEarnings || 0);
-      } catch (statsErr) {
-        // The referral page must still open even if a statistics query
-        // temporarily fails. Link generation is independent of stats.
-        logger.error(
-          `Referral stats read failed | user=${ctx.from?.id || "unknown"}`,
-          statsErr
-        );
-      }
-
-      const text =
+      // Instant first render. Statistics are refreshed in background.
+      await editScreen(ctx,
         `👥 <b>Refer & Earn</b>\n\n` +
         `🎁 Earn <b>${rate}%</b> commission on deposits made by users you refer.\n\n` +
-        `👤 <b>Referred Users:</b> ${referredUsers}\n` +
-        `💰 <b>Referral Earnings:</b> ₹${formatAmount(referralEarnings)}\n\n` +
+        `👤 <b>Referred Users:</b> —\n` +
+        `💰 <b>Referral Earnings:</b> ₹—\n\n` +
         `🔗 <b>Your Referral Link:</b>\n` +
         `<code>${escapeHtml(referralLink)}</code>\n\n` +
-        `👤 <b>Your Referrer:</b> ` +
-        `${user.referrerId ? "Already assigned" : "None"}\n\n` +
-        `Share your link with your friends to invite them.`;
+        `👤 <b>Your Referrer:</b> ${snapshotUser?.referrerId ? "Already assigned" : "None"}`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "📤 Share Referral Link",
+                  url: `https://t.me/share/url?url=${encodeURIComponent(referralLink)}`,
+                },
+              ],
+              [
+                {
+                  text: "🏠 Main Menu",
+                  callback_data: "menu_home",
+                },
+              ],
+            ],
+          },
+        }
+      ).catch(() => {});
 
-      await editScreen(ctx, text, {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: "📤 Share Referral Link",
-                url: `https://t.me/share/url?url=${encodeURIComponent(referralLink)}`,
-              },
-            ],
-            [
-              {
-                text: "🏠 Main Menu",
-                callback_data: "menu_home",
-              },
-            ],
-          ],
-        },
+      setImmediate(async () => {
+        try {
+          const user = (await db.getUser(ctx.from.id)) || snapshotUser || {
+            telegramId: String(ctx.from.id),
+            firstName: ctx.from?.first_name || "",
+            lastName: ctx.from?.last_name || "",
+            username: ctx.from?.username || "",
+            referrerId: null,
+            referralRateOverride: null,
+          };
+
+          const settings =
+            (await db.getSettings()) || snapshotSettings;
+
+          let referredUsers = 0;
+          let referralEarnings = 0;
+
+          try {
+            const referralStats = await db.getReferralStats(ctx.from.id);
+            referredUsers = Number(referralStats?.referredUsers || 0);
+            referralEarnings = Number(referralStats?.referralEarnings || 0);
+          } catch (statsErr) {
+            logger.error(
+              `Referral stats read failed | user=${ctx.from?.id || "unknown"}`,
+              statsErr
+            );
+          }
+
+          const freshBotUsername = String(
+            settings?.botUsername ||
+            botUsername ||
+            "account_stores_bot"
+          ).replace(/^@/, "").trim();
+
+          const freshReferralLink =
+            `https://t.me/${freshBotUsername}?start=${encodeURIComponent(String(ctx.from.id))}`;
+
+          const freshRate = getEffectiveOutboundRate(user, settings);
+
+          const text =
+            `👥 <b>Refer & Earn</b>\n\n` +
+            `🎁 Earn <b>${freshRate}%</b> commission on deposits made by users you refer.\n\n` +
+            `👤 <b>Referred Users:</b> ${referredUsers}\n` +
+            `💰 <b>Referral Earnings:</b> ₹${formatAmount(referralEarnings)}\n\n` +
+            `🔗 <b>Your Referral Link:</b>\n` +
+            `<code>${escapeHtml(freshReferralLink)}</code>\n\n` +
+            `👤 <b>Your Referrer:</b> ${user.referrerId ? "Already assigned" : "None"}\n\n` +
+            `Share your link with your friends to invite them.`;
+
+          await editScreen(ctx, text, {
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "📤 Share Referral Link",
+                    url: `https://t.me/share/url?url=${encodeURIComponent(freshReferralLink)}`,
+                  },
+                ],
+                [
+                  {
+                    text: "🏠 Main Menu",
+                    callback_data: "menu_home",
+                  },
+                ],
+              ],
+            },
+          });
+        } catch (err) {
+          logger.error(
+            `Background referral load failed | user=${ctx.from?.id || "unknown"}`,
+            err
+          );
+        }
       });
     } catch (err) {
       logger.error(
