@@ -797,7 +797,7 @@ async function sumApprovedDepositAmount() {
 async function approveDeposit(depositId, adminId) {
   const depositRef = db.collection(DEPOSITS).doc(depositId);
 
-  return db.runTransaction(async (txn) => {
+  const result = await db.runTransaction(async (txn) => {
     // ----------------------------------------------------------
     // READ PHASE — all reads happen before any writes
     // ----------------------------------------------------------
