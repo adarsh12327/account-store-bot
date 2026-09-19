@@ -74,6 +74,26 @@ async function getCachedMembership(bot, channel, telegramId) {
   return joined;
 }
 
+async function primeAccessCache(bot, telegramId, settings = null, user = null) {
+  const id = String(telegramId);
+  const now = Date.now();
+
+  if (settings) {
+    settingsCache = settings;
+    settingsCacheAt = now;
+  }
+
+  if (user) {
+    userCache.set(id, { user, at: now });
+  }
+
+  // Warm the membership cache in the background when possible.
+  const effectiveSettings = settings || settingsCache;
+  if (effectiveSettings?.forceChannel) {
+    getCachedMembership(bot, effectiveSettings.forceChannel, telegramId).catch(() => {});
+  }
+}
+
 async function accessGuard(bot, ctx, next) {
   const telegramId = ctx.from?.id;
 
@@ -85,6 +105,27 @@ async function accessGuard(bot, ctx, next) {
 
   if (isStartCommand(ctx) || isCancelCommand(ctx) || isJoinVerification(ctx)) {
     return next();
+  }
+
+  const isCallback = Boolean(ctx.callbackQuery);
+
+  // Callback queries must be acknowledged by their handler quickly.
+  // Never block them on a cold Firestore/Telegram access check.
+  // /start primes these caches, so normal callbacks still get the
+  // full security checks without making the UI feel slow.
+  if (isCallback) {
+    const now = Date.now();
+    const settingsFresh =
+      settingsCache && now - settingsCacheAt < SETTINGS_TTL_MS;
+    const cachedUser = userCache.get(String(telegramId));
+    const userFresh =
+      cachedUser && now - cachedUser.at < USER_TTL_MS;
+
+    if (!settingsFresh || !userFresh) {
+      getCachedSettings().catch(() => {});
+      getCachedUser(telegramId).catch(() => {});
+      return next();
+    }
   }
 
   const settings = await getCachedSettings();
@@ -143,4 +184,4 @@ async function accessGuard(bot, ctx, next) {
   return next();
 }
 
-module.exports = { accessGuard };
+module.exports = { accessGuard, primeAccessCache };
