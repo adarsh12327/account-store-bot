@@ -114,44 +114,50 @@ function registerWalletHandler(bot) {
 
   bot.action("wallet_history", async (ctx) => {
     try {
-      await ctx.answerCbQuery();
-
-      const transactions =
-        await db.listUserTransactions(
-          ctx.from.id,
-          10
-        );
-
-      if (transactions.length === 0) {
-        await editScreen(
-          ctx,
-          "📜 <b>Transaction History</b>\n\nNo transactions yet.",
-          backToMenu()
-        );
-        return;
-      }
-
-      const lines = transactions.map((t) => {
-        const sign =
-          Number(t.amount) >= 0 ? "+" : "";
-
-        return (
-          `${formatDate(t.createdAt)}\n` +
-          `${sign}₹${formatAmount(t.amount)} ` +
-          `(${escapeHtml(t.type)})\n` +
-          `${escapeHtml(t.note || "")}`
-        );
-      });
-
-      const text =
-        `📜 <b>Last ${transactions.length} Transactions</b>\n\n` +
-        lines.join("\n\n");
+      await ctx.answerCbQuery().catch(() => {});
 
       await editScreen(
         ctx,
-        text,
+        "📜 <b>Transaction History</b>\n\n⏳ Loading...",
         backToMenu()
-      );
+      ).catch(() => {});
+
+      setImmediate(async () => {
+        try {
+          const transactions = await db.listUserTransactions(ctx.from.id, 10);
+
+          if (transactions.length === 0) {
+            await editScreen(
+              ctx,
+              "📜 <b>Transaction History</b>\n\nNo transactions yet.",
+              backToMenu()
+            );
+            return;
+          }
+
+          const lines = transactions.map((t) => {
+            const sign = Number(t.amount) >= 0 ? "+" : "";
+            return (
+              `${formatDate(t.createdAt)}\n` +
+              `${sign}₹${formatAmount(t.amount)} (${escapeHtml(t.type)})\n` +
+              `${escapeHtml(t.note || "")}`
+            );
+          });
+
+          const text =
+            `📜 <b>Last ${transactions.length} Transactions</b>\n\n` +
+            lines.join("\n\n");
+
+          await editScreen(ctx, text, backToMenu());
+        } catch (err) {
+          logger.error("Background wallet history load failed", err);
+          await editScreen(
+            ctx,
+            "📜 <b>Transaction History</b>\n\n⚠️ Data is temporarily unavailable.\nPlease try again shortly.",
+            backToMenu()
+          ).catch(() => {});
+        }
+      });
 
     } catch (err) {
       logger.error(
