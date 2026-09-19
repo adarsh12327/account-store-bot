@@ -56,10 +56,7 @@ function registerDepositHandler(bot) {
 
       await ctx.answerCbQuery();
 
-      const settings =
-        typeof db.getSettingsSnapshot === "function"
-          ? db.getSettingsSnapshot()
-          : { minimumDeposit: 1, upiId: "", paymentQrFileId: "" };
+      const settings = await db.getSettings();
 
       session.set(ctx.from.id, {
         step: "deposit_amount",
@@ -127,10 +124,7 @@ function registerDepositHandler(bot) {
 
     deposit_amount: async (ctx, state) => {
 
-      const settings =
-        typeof db.getSettingsSnapshot === "function"
-          ? db.getSettingsSnapshot()
-          : { minimumDeposit: 1, upiId: "", paymentQrFileId: "" };
+      const settings = await db.getSettings();
 
       const amount = parseAmount(
         ctx.message.text,
