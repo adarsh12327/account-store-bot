@@ -1085,6 +1085,9 @@ function registerAdminProductsHandler(bot) {
 
               marginPercent,
 
+              // Auto-generated products follow Admin global pricing.
+              useGlobalPricing: true,
+
               apiPrice:
                 Number(
                   finalPrice.toFixed(2)
@@ -2260,6 +2263,8 @@ function registerAdminProductsHandler(bot) {
 
       await updateProductAndInvalidate(productId, {
         marginPercent: margin,
+        // Manual product margin edit becomes an explicit override.
+        useGlobalPricing: false,
       });
 
       session.clear(ctx.from.id);
