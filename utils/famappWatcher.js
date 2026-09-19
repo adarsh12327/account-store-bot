@@ -458,7 +458,7 @@ function startFamAppWatcher(bot) {
           err
         )
     );
-  }, 30 * 1000);
+  }, 2 * 60 * 1000);
 }
 
 module.exports = {
