@@ -26,7 +26,6 @@ const {
   mainMenu,
   forceJoinKeyboard,
 } = require("../keyboards/user");
-const { primeAccessCache } = require("../utils/accessGuard");
 
 
 /**
@@ -130,47 +129,64 @@ async function showMainMenu(ctx, user = null, edit = false) {
 }
 
 /**
- * Background security / database initialization.
+ * Start-time security checks.
  *
- * This does NOT block the initial menu.
+ * Security checks intentionally run only from /start. The user first
+ * receives a lightweight checking screen, then all required checks run
+ * before the home menu is shown.
+ *
+ * The normal button/callback path never performs these checks, so normal
+ * bot navigation stays fast.
  */
 async function runBackgroundStart(
   bot,
   ctx,
   telegramId,
-  menuMessage,
+  checkingMessage,
   startPayload = ""
 ) {
+  const editChecking = async (text) => {
+    try {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        checkingMessage.message_id,
+        undefined,
+        text,
+        { parse_mode: "HTML" }
+      );
+    } catch (err) {
+      const msg = String(err.message || "").toLowerCase();
+      if (!msg.includes("message is not modified")) {
+        logger.debug?.("Start checking screen update skipped", err);
+      }
+    }
+  };
 
   try {
-
-    const user = await db.createUser(
-      telegramId,
-      {
+    // User creation and settings load happen in parallel.
+    const [user, settings] = await Promise.all([
+      db.createUser(telegramId, {
         firstName: ctx.from.first_name || "",
         lastName: ctx.from.last_name || "",
         username: ctx.from.username || "",
         startPayload: String(startPayload || "").trim(),
-      }
-    );
+      }),
+      db.getSettings(),
+    ]);
 
+    // Referral registration is only needed for a brand-new user.
     if (user?._isNewUser && startPayload) {
       try {
-        const referralResult =
-          await db.registerUserReferral(
-            telegramId,
-            startPayload
-          );
+        const referralResult = await db.registerUserReferral(
+          telegramId,
+          startPayload
+        );
 
-        if (referralResult.registered) {
-          logger.info(
-            `[REFERRAL] Registered | user=${telegramId} | referrer=${referralResult.referrerId} | rate=${referralResult.referralRate}%`
-          );
-        } else {
-          logger.info(
-            `[REFERRAL] Not registered | user=${telegramId} | reason=${referralResult.reason}`
-          );
-        }
+        logger.info(
+          referralResult.registered
+            ? `[REFERRAL] Registered | user=${telegramId} | referrer=${referralResult.referrerId} | rate=${referralResult.referralRate}%`
+            : `[REFERRAL] Not registered | user=${telegramId} | reason=${referralResult.reason}`
+        );
       } catch (referralErr) {
         logger.error(
           `[REFERRAL] Registration failed | user=${telegramId}`,
@@ -179,95 +195,108 @@ async function runBackgroundStart(
       }
     }
 
+    // Account ban is checked before any home screen is shown.
     if (user?.banned) {
-      try {
-        await ctx.telegram.deleteMessage(
-          ctx.chat.id,
-          menuMessage.message_id
-        );
-      } catch (_) {}
-
-      await ctx.reply(
-        "🚫 You are banned from using this bot."
+      await editChecking(
+        "🚫 <b>Access Denied</b>\n\nYour account is banned from using this bot."
       );
-
       return;
     }
 
-    const settings =
-      await db.getSettings();
+    const admin = isAdmin(telegramId);
 
-    // Warm the global access cache after /start so the first button
-    // click does not wait for Firestore or Telegram membership checks.
-    await primeAccessCache(
-      bot,
-      telegramId,
-      settings,
-      user
-    );
-
-    const admin =
-      isAdmin(telegramId);
-
-    if (
-      settings.maintenance &&
-      !admin
-    ) {
-      try {
-        await ctx.telegram.deleteMessage(
-          ctx.chat.id,
-          menuMessage.message_id
-        );
-      } catch (_) {}
-
-      await ctx.reply(
-        "🛠️ The bot is currently under maintenance.\n\n" +
-        "Please check back later."
+    if (settings.maintenance && !admin) {
+      await editChecking(
+        "🛠️ <b>Maintenance Mode</b>\n\nThe bot is currently under maintenance.\nPlease try again later."
       );
-
       return;
     }
 
-    if (
-      settings.forceChannel &&
-      !admin
-    ) {
-      const joined =
-        await isChannelMember(
-          bot,
-          settings.forceChannel,
-          telegramId
-        );
+    // Telegram membership is the only external security check. It runs
+    // only when Force Join is configured and the user is not an admin.
+    if (settings.forceChannel && !admin) {
+      await editChecking(
+        "🔄 <b>Checking channel membership...</b>\n\nPlease wait..."
+      );
+
+      const joined = await isChannelMember(
+        bot,
+        settings.forceChannel,
+        telegramId
+      );
 
       if (!joined) {
+        await editChecking(
+          "📢 <b>Join Required</b>\n\nYou must join our channel before using this bot."
+        );
+
+        // Add the Join/Verify buttons to the same checking message.
         try {
-          await ctx.telegram.deleteMessage(
+          await ctx.telegram.editMessageReplyMarkup(
             ctx.chat.id,
-            menuMessage.message_id
+            checkingMessage.message_id,
+            undefined,
+            forceJoinKeyboard(settings.forceChannel).reply_markup
           );
         } catch (_) {}
-
-        await ctx.reply(
-          "📢 You must join our channel before using this bot.",
-          forceJoinKeyboard(
-            settings.forceChannel
-          )
-        );
 
         return;
       }
     }
 
-    console.log(
-      `[BACKGROUND] Start checks completed for ${telegramId}`
+    // Only after every start-time check succeeds do we show Home.
+    const homeText = showMainMenuText(ctx);
+    const keyboard = mainMenu(isAdmin(telegramId));
+
+    await ctx.telegram.editMessageText(
+      ctx.chat.id,
+      checkingMessage.message_id,
+      undefined,
+      homeText,
+      {
+        parse_mode: "HTML",
+        ...keyboard,
+      }
     );
 
+    console.log(
+      `[START] Checks completed for ${telegramId}`
+    );
   } catch (err) {
     logger.error(
-      "Background /start error",
+      `Start checks failed | user=${telegramId}`,
       err
     );
+
+    // Never silently bypass security on a failed check.
+    await editChecking(
+      "⚠️ <b>Verification failed</b>\n\nPlease tap /start again in a moment."
+    );
   }
+}
+
+/**
+ * Build the home-screen text without any database/network read.
+ */
+function showMainMenuText(ctx) {
+  const firstName = ctx.from?.first_name || "there";
+
+  const botUsername = String(
+    ctx.botInfo?.username ||
+    ctx.telegram?.botInfo?.username ||
+    "account_stores_bot"
+  ).replace(/^@/, "").trim();
+
+  const referralLink =
+    `https://t.me/${botUsername}?start=${encodeURIComponent(String(ctx.from.id))}`;
+
+  return (
+    `<b>Welcome back, ${escapeHtml(firstName)} 👋</b>\n\n` +
+    `👥 <b>Refer &amp; Earn</b>\n` +
+    `🎁 Earn <b>10%</b> commission on every referred user's deposit.\n\n` +
+    `🔗 <b>Your Referral Link:</b>\n` +
+    `<a href="${referralLink}">${escapeHtml(referralLink)}</a>`
+  );
 }
 
 
@@ -297,27 +326,23 @@ function registerStartHandler(bot) {
         `[START] ${telegramId} received`
       );
 
-      const menuMessage =
-        await showMainMenu(ctx);
-
-      console.log(
-        `[START] Menu sent in ${Date.now() - startedAt}ms`
+      const checkingMessage = await ctx.reply(
+        "🔄 <b>Checking your account...</b>\n\n" +
+        "⏳ <i>Please wait...</i>",
+        { parse_mode: "HTML" }
       );
 
-      setImmediate(() => {
-        runBackgroundStart(
-          bot,
-          ctx,
-          telegramId,
-          menuMessage,
-          startPayload
-        ).catch((err) => {
-          logger.error(
-            "Background start promise error",
-            err
-          );
-        });
-      });
+      console.log(
+        `[START] Checking screen sent in ${Date.now() - startedAt}ms`
+      );
+
+      await runBackgroundStart(
+        bot,
+        ctx,
+        telegramId,
+        checkingMessage,
+        startPayload
+      );
 
     } catch (err) {
 
