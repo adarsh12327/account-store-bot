@@ -39,7 +39,7 @@ const SERVER1_SERVICES = "server1_services";
 // every click. These short TTL caches dramatically reduce read quota
 // usage while keeping wallet/settings data fresh.
 // ------------------------------------------------------------------
-const USER_CACHE_TTL_MS = 5_000;
+const USER_CACHE_TTL_MS = 5 * 60_000;
 const SETTINGS_CACHE_TTL_MS = 60_000;
 const userReadCache = new Map();
 let settingsReadCache = null;
@@ -241,6 +241,17 @@ async function createUser(telegramId, data = {}) {
     updatedAt: new Date(),
   };
 }
+function getSettingsSnapshot() {
+  return {
+    ...(settingsReadCache || DEFAULT_SETTINGS),
+  };
+}
+
+function getUserSnapshot(telegramId) {
+  const cached = userReadCache.get(String(telegramId || ""));
+  return cached?.user || null;
+}
+
 async function getUser(telegramId) {
   if (!telegramId) throw new Error("getUser: telegramId is required");
 
@@ -3490,6 +3501,8 @@ module.exports = {
   cancelOrder,
   // settings
   getSettings,
+  getSettingsSnapshot,
+  getUserSnapshot,
   updateSettings,
   // statistics
   getStatistics,
