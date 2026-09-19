@@ -34,6 +34,18 @@ const SETTINGS_DOC_ID = "config";
 const SERVER1_COUNTRIES = "server1_countries";
 const SERVER1_SERVICES = "server1_services";
 
+// ------------------------------------------------------------------
+// Hot-read caches: Telegram button handlers must not hit Firestore on
+// every click. These short TTL caches dramatically reduce read quota
+// usage while keeping wallet/settings data fresh.
+// ------------------------------------------------------------------
+const USER_CACHE_TTL_MS = 5_000;
+const SETTINGS_CACHE_TTL_MS = 60_000;
+const userReadCache = new Map();
+let settingsReadCache = null;
+let settingsReadCacheAt = 0;
+let settingsReadPromise = null;
+
 const DEFAULT_SETTINGS = {
   adminId: "",
   referralPercent: 10,
@@ -217,6 +229,11 @@ async function createUser(telegramId, data = {}) {
 
   await userRef.set(newUser);
 
+  userReadCache.set(userId, {
+    user: { ...newUser, _isNewUser: true, joinDate: new Date(), updatedAt: new Date() },
+    at: Date.now(),
+  });
+
   return {
     ...newUser,
     _isNewUser: true,
@@ -226,8 +243,20 @@ async function createUser(telegramId, data = {}) {
 }
 async function getUser(telegramId) {
   if (!telegramId) throw new Error("getUser: telegramId is required");
-  const snap = await db.collection(USERS).doc(String(telegramId)).get();
-  return snap.exists ? snap.data() : null;
+
+  const userId = String(telegramId);
+  const now = Date.now();
+  const cached = userReadCache.get(userId);
+
+  if (cached && now - cached.at < USER_CACHE_TTL_MS) {
+    return cached.user;
+  }
+
+  const snap = await db.collection(USERS).doc(userId).get();
+  const user = snap.exists ? snap.data() : null;
+
+  userReadCache.set(userId, { user, at: now });
+  return user;
 }
 
 async function getReferralStats(referrerId) {
@@ -260,6 +289,16 @@ async function updateUser(telegramId, updates = {}) {
   if (!snap.exists) throw new Error(`updateUser: user ${telegramId} does not exist`);
 
   await userRef.update({ ...updates, updatedAt: FieldValue.serverTimestamp() });
+
+  const cached = userReadCache.get(String(telegramId));
+  if (cached?.user) {
+    userReadCache.set(String(telegramId), {
+      user: { ...cached.user, ...updates },
+      at: Date.now(),
+    });
+  } else {
+    userReadCache.delete(String(telegramId));
+  }
 }
 
 /**
@@ -699,13 +738,20 @@ async function getDeposit(depositId) {
 }
 
 async function listPendingDeposits(limit = 20) {
-  // Avoid a composite Firestore index requirement here. We filter by
-  // status in Firestore and sort the small pending set in JavaScript.
-  const snap = await db.collection(DEPOSITS).where("status", "==", "pending").get();
+  // The watcher only needs to know whether ANY pending deposit exists.
+  // Reading every pending document every 30 seconds can exhaust the
+  // Firestore read quota. Keep the query bounded to the oldest few.
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 1, 5));
+
+  const snap = await db
+    .collection(DEPOSITS)
+    .where("status", "==", "pending")
+    .limit(safeLimit)
+    .get();
+
   return snap.docs
     .map((d) => d.data())
-    .sort((a, b) => toMillis(a.createdAt) - toMillis(b.createdAt))
-    .slice(0, limit);
+    .sort((a, b) => toMillis(a.createdAt) - toMillis(b.createdAt));
 }
 async function listUserDeposits(telegramId, limit = 10, offset = 0) {
   const userId = String(telegramId);
@@ -1922,20 +1968,53 @@ async function cancelOrder(orderId, adminId) {
 // ==================================================================
 
 async function getSettings() {
-  const ref = db.collection(SETTINGS).doc(SETTINGS_DOC_ID);
-  const snap = await ref.get();
+  const now = Date.now();
 
-  if (!snap.exists) {
-    await ref.set(DEFAULT_SETTINGS);
-    return { ...DEFAULT_SETTINGS };
+  if (
+    settingsReadCache &&
+    now - settingsReadCacheAt < SETTINGS_CACHE_TTL_MS
+  ) {
+    return settingsReadCache;
   }
 
-  return { ...DEFAULT_SETTINGS, ...snap.data() };
+  if (settingsReadPromise) {
+    return settingsReadPromise;
+  }
+
+  settingsReadPromise = (async () => {
+    try {
+      const ref = db.collection(SETTINGS).doc(SETTINGS_DOC_ID);
+      const snap = await ref.get();
+
+      if (!snap.exists) {
+        await ref.set(DEFAULT_SETTINGS);
+        settingsReadCache = { ...DEFAULT_SETTINGS };
+      } else {
+        settingsReadCache = {
+          ...DEFAULT_SETTINGS,
+          ...snap.data(),
+        };
+      }
+
+      settingsReadCacheAt = Date.now();
+      return settingsReadCache;
+    } finally {
+      settingsReadPromise = null;
+    }
+  })();
+
+  return settingsReadPromise;
 }
 
 async function updateSettings(updates = {}) {
   const ref = db.collection(SETTINGS).doc(SETTINGS_DOC_ID);
   await ref.set(updates, { merge: true });
+
+  settingsReadCache = {
+    ...(settingsReadCache || DEFAULT_SETTINGS),
+    ...updates,
+  };
+  settingsReadCacheAt = Date.now();
 }
 
 // ==================================================================
