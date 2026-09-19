@@ -29,8 +29,8 @@ function getRealCallingCode(phoneNumber) {
  * - 2-column country/product UI
  * - 28 products per page
  * - Lazy loading when Server 1 is opened
- * - Grizzly prices fetched once
- * - Persistent local API cache
+ * - Live Grizzly price/stock check on Buy Now
+ * - Local catalog cache for navigation only
  * - Product details
  * - Stock / price / provider information
  * - Buy flow using createServer1Order()
@@ -1455,6 +1455,59 @@ function getGrizzlyTGItem(
 
 // ------------------------------------------------------------
 // 🔄 Convert Grizzly price response to sync items
+
+// ------------------------------------------------------------
+// 🔴 LIVE BUY PRICE
+// Price/stock are checked ONLY when Buy Now is clicked.
+// No Firestore read/write is performed for provider pricing.
+// ------------------------------------------------------------
+async function getLiveGrizzlyTelegramPrice(countryCode) {
+  const code = String(countryCode || "").trim();
+  if (!code) {
+    const err = new Error("GRIZZLY_COUNTRY_CODE_REQUIRED");
+    err.code = "GRIZZLY_COUNTRY_CODE_REQUIRED";
+    throw err;
+  }
+
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => {
+      const err = new Error("GRIZZLY_API_TIMEOUT");
+      err.code = "GRIZZLY_API_TIMEOUT";
+      reject(err);
+    }, GRIZZLY_TIMEOUT);
+  });
+
+  const prices = await Promise.race([
+    getPrices(),
+    timeoutPromise,
+  ]);
+
+  const item = getGrizzlyTGItem(prices, code);
+
+  if (!item) {
+    const err = new Error("GRIZZLY_PRICE_NOT_FOUND");
+    err.code = "GRIZZLY_PRICE_NOT_FOUND";
+    throw err;
+  }
+
+  const costUsd = Number(item.cost);
+  const count = Number(item.count || 0);
+  const retry = Number(item.retry || 0);
+
+  if (!Number.isFinite(costUsd) || costUsd <= 0) {
+    const err = new Error("GRIZZLY_INVALID_PRICE");
+    err.code = "GRIZZLY_INVALID_PRICE";
+    throw err;
+  }
+
+  return {
+    costUsd,
+    count: Number.isFinite(count) ? count : 0,
+    retry: Number.isFinite(retry) ? retry : 0,
+  };
+}
+
+
 // ------------------------------------------------------------
 
 function buildGrizzlyPriceItems(root, countries = []) {
@@ -2783,9 +2836,8 @@ function registerServer1Handler(bot) {
   // Make the Telegram bot available to the background Server 1 monitor.
   global.__SERVER1_BOT__ = bot;
 
-  // Start Server 1 automatic background catalog refresh.
-  startServer1AutoRefresh();
-
+  // Server 1 provider pricing is checked live only on Buy Now.
+  // No background Grizzly price polling.
   // ==========================================================
   // SERVER 1 OPEN
   // ==========================================================
@@ -3026,7 +3078,16 @@ function registerServer1Handler(bot) {
         const {
           catalog,
         } =
-          await loadServer1Catalog();
+          getInstantServer1Catalog() || {};
+
+        if (!Array.isArray(catalog) || !catalog.length) {
+          await answer(
+            ctx,
+            "⚠️ Server 1 catalog is temporarily unavailable. Please refresh and try again.",
+            true
+          );
+          return;
+        }
 
         const product =
           catalog.find(
@@ -3154,39 +3215,63 @@ function registerServer1Handler(bot) {
           return;
         }
 
-        // Always check live provider stock.
-        const stock =
-          Number.isFinite(
-            Number(product.apiCount)
-          )
-            ? Number(product.apiCount)
-            : 0;
+        // LIVE Grizzly check: provider price + stock are read
+        // directly from the API only after Buy Now is clicked.
+        let liveProvider;
 
-        if (stock < 1) {
+        try {
+          liveProvider =
+            await getLiveGrizzlyTelegramPrice(
+              product.countryCode
+            );
+        } catch (err) {
+          logger.warn(
+            `Server 1 live Grizzly price check failed: country=${product.countryCode}`,
+            err.message || err
+          );
 
           await answer(
             ctx,
-            "❌ Out of stock."
+            "⚠️ Live Grizzly price/stock is temporarily unavailable. Please try again.",
+            true
           );
-
           return;
         }
 
-        const price =
-          Number(
-            product.finalPrice || 0
-          );
-
-        if (
-          !Number.isFinite(price) ||
-          price <= 0
-        ) {
-
+        if (liveProvider.count < 1) {
           await answer(
             ctx,
-            "Invalid price."
+            "❌ Out of stock on Grizzly.",
+            true
           );
+          return;
+        }
 
+        // Existing pricing model:
+        // Grizzly USD cost -> INR using product's configured USD
+        // rate -> configured margin. No Firestore price read.
+        const usdRate =
+          Number(product.usdRate) || 105;
+
+        const marginPercent =
+          Number(product.marginPercent) || 0;
+
+        const costInr =
+          liveProvider.costUsd * usdRate;
+
+        const price = Number(
+          (
+            costInr +
+            (costInr * marginPercent / 100)
+          ).toFixed(2)
+        );
+
+        if (!Number.isFinite(price) || price <= 0) {
+          await answer(
+            ctx,
+            "⚠️ Invalid live price.",
+            true
+          );
           return;
         }
 
@@ -4099,5 +4184,6 @@ module.exports = {
   invalidateServer1CatalogCache,
   getCachedGrizzlyPrices,
   getGrizzlyTGItem,
+  getLiveGrizzlyTelegramPrice,
   loadServer1Catalog,
 };
