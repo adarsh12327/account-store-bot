@@ -92,35 +92,53 @@ function registerOrdersHandler(bot) {
 
   bot.action("menu_orders", async (ctx) => {
     try {
-      await ctx.answerCbQuery();
+      await ctx.answerCbQuery().catch(() => {});
 
-      const userId = String(ctx.from.id);
-
-      const [legacyOrders, server1OrdersRaw] = await Promise.all([
-        db.listUserOrders(userId, 10),
-        db.listUserServer1Orders(userId, 10, 0),
-      ]);
-
-      const server1Orders = server1OrdersRaw.map(normalizeServer1Order);
-
-      const orders = [...legacyOrders, ...server1Orders]
-        .sort((a, b) => orderTime(b) - orderTime(a))
-        .slice(0, 10);
-
-      if (orders.length === 0) {
-        await editScreen(
-          ctx,
-          "📦 <b>My Orders</b>\n\nYou have no orders yet.",
-          backToMenu()
-        );
-        return;
-      }
-
+      // Give immediate visual feedback; Firestore reads continue in
+      // the background and cannot hold the Telegram callback open.
       await editScreen(
         ctx,
-        "📦 <b>Your Orders</b>\n\nTap an order to view details:",
-        ordersListKeyboard(orders)
-      );
+        "📦 <b>My Orders</b>\n\n⏳ Loading orders...",
+        backToMenu()
+      ).catch(() => {});
+
+      setImmediate(async () => {
+        try {
+          const userId = String(ctx.from.id);
+
+          const [legacyOrders, server1OrdersRaw] = await Promise.all([
+            db.listUserOrders(userId, 10),
+            db.listUserServer1Orders(userId, 10, 0),
+          ]);
+
+          const server1Orders = server1OrdersRaw.map(normalizeServer1Order);
+          const orders = [...legacyOrders, ...server1Orders]
+            .sort((a, b) => orderTime(b) - orderTime(a))
+            .slice(0, 10);
+
+          if (orders.length === 0) {
+            await editScreen(
+              ctx,
+              "📦 <b>My Orders</b>\n\nYou have no orders yet.",
+              backToMenu()
+            );
+            return;
+          }
+
+          await editScreen(
+            ctx,
+            "📦 <b>Your Orders</b>\n\nTap an order to view details:",
+            ordersListKeyboard(orders)
+          );
+        } catch (err) {
+          logger.error("Background orders load failed", err);
+          await editScreen(
+            ctx,
+            "📦 <b>My Orders</b>\n\n⚠️ Orders are temporarily unavailable.\nPlease try again shortly.",
+            backToMenu()
+          ).catch(() => {});
+        }
+      });
 
     } catch (err) {
       logger.error(
