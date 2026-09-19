@@ -447,10 +447,7 @@ function registerStartHandler(bot) {
     try {
       await ctx.answerCbQuery().catch(() => {});
 
-      const settings =
-        typeof db.getSettingsSnapshot === "function"
-          ? db.getSettingsSnapshot()
-          : {};
+      const settings = await db.getSettings();
       const salesChannel = String(settings.salesChannel || "").trim();
 
       if (!salesChannel) {
