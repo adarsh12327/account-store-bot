@@ -78,6 +78,34 @@ export default {
         return json(result);
       }
 
+      if (url.pathname === "/lock/acquire") {
+        const holder = String(body?.holder || "").trim();
+        const ttlMs = Math.max(5000, Math.min(Number(body?.ttlMs) || 15000, 60000));
+        if (!holder) return json({ error: "holder is required" }, 400);
+
+        const now = Date.now();
+        const expiresAt = now + ttlMs;
+
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM d1_mutex WHERE id = ? AND expires_at <= ?").bind("global", now),
+          env.DB.prepare("INSERT OR IGNORE INTO d1_mutex (id, holder, expires_at) VALUES (?, ?, ?)").bind("global", holder, expiresAt),
+        ]);
+
+        const row = await env.DB.prepare("SELECT holder, expires_at FROM d1_mutex WHERE id = ?").bind("global").first();
+        return json({
+          acquired: Boolean(row && row.holder === holder),
+          expiresAt: row?.expires_at || null,
+        });
+      }
+
+      if (url.pathname === "/lock/release") {
+        const holder = String(body?.holder || "").trim();
+        if (!holder) return json({ error: "holder is required" }, 400);
+
+        await env.DB.prepare("DELETE FROM d1_mutex WHERE id = ? AND holder = ?").bind("global", holder).run();
+        return json({ released: true });
+      }
+
       if (url.pathname === "/batch") {
         const batch = body?.batch;
 
