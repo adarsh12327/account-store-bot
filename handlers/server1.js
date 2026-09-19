@@ -1819,7 +1819,7 @@ async function loadServer1Catalog(options = {}) {
   // Prices come directly from Firestore product documents.
   // ----------------------------------------------------------
 
-  const [products, countries] = await Promise.all([
+  const [products, countries, pricingSettings] = await Promise.all([
     db.listProducts({
       onlyEnabled: true,
     }),
@@ -1827,7 +1827,12 @@ async function loadServer1Catalog(options = {}) {
     db.listServer1Countries({
       onlyEnabled: true,
     }),
+
+    db.getSettings(),
   ]);
+
+  server1PricingSignature =
+    getServer1PricingSignature(pricingSettings);
 
   const countryMap = new Map();
 
@@ -1857,11 +1862,19 @@ async function loadServer1Catalog(options = {}) {
       continue;
     }
 
-    const usdRate =
-      Number(product.usdRate || 105);
+    // Products use the Admin global pricing by default.
+    // An admin editing an individual product margin explicitly sets
+    // useGlobalPricing=false, preserving that product-specific override.
+    const useGlobalPricing =
+      product.useGlobalPricing !== false;
 
-    const marginPercent =
-      Number(product.marginPercent || 0);
+    const usdRate = useGlobalPricing
+      ? Number(pricingSettings.usdRate || 105)
+      : Number(product.usdRate || 105);
+
+    const marginPercent = useGlobalPricing
+      ? Number(pricingSettings.profit || 0)
+      : Number(product.marginPercent || 0);
 
     const providerUsdPrice =
       Number(product.providerUsdPrice || 0);
@@ -2502,6 +2515,33 @@ function startServer1AutoRefresh() {
 
 let server1LoadingGeneration = 0;
 
+let server1PricingSignature = "";
+
+function getServer1PricingSignature(settings = {}) {
+  return [
+    Number(settings.usdRate || 105),
+    Number(settings.profit || 0),
+  ].join("|");
+}
+
+function invalidateServer1CatalogCache() {
+  server1CatalogMemory = null;
+  server1CatalogMemoryAt = 0;
+
+  try {
+    if (fs.existsSync(CATALOG_CACHE_FILE)) {
+      fs.unlinkSync(CATALOG_CACHE_FILE);
+    }
+  } catch (err) {
+    logger.warn(
+      "Server 1 pricing cache invalidation failed:",
+      err.message
+    );
+  }
+}
+
+
+
 // ------------------------------------------------------------
 // Loading animation
 // ------------------------------------------------------------
@@ -2855,6 +2895,20 @@ function registerServer1Handler(bot) {
         // Settings are cached, so this check is fast and does not hit D1
         // on every click when the cache is warm.
         const server1Settings = await db.getSettings();
+
+        const pricingSignature =
+          getServer1PricingSignature(server1Settings);
+
+        const pricingChanged =
+          server1PricingSignature &&
+          server1PricingSignature !== pricingSignature;
+
+        if (pricingChanged) {
+          invalidateServer1CatalogCache();
+        }
+
+        server1PricingSignature = pricingSignature;
+
         if (server1Settings.server1Enabled === false) {
           await editScreen(
             ctx,
@@ -2864,7 +2918,10 @@ function registerServer1Handler(bot) {
           return;
         }
 
-        const instant = getInstantServer1Catalog();
+        const instant =
+          pricingChanged
+            ? null
+            : getInstantServer1Catalog();
 
         if (!instant) {
           await editScreen(
@@ -3285,11 +3342,16 @@ function registerServer1Handler(bot) {
         // Existing pricing model:
         // Grizzly USD cost -> INR using product's configured USD
         // rate -> configured margin. No Firestore price read.
-        const usdRate =
-          Number(product.usdRate) || 105;
+        const useGlobalPricing =
+          product.useGlobalPricing !== false;
 
-        const marginPercent =
-          Number(product.marginPercent) || 0;
+        const usdRate = useGlobalPricing
+          ? Number(server1Settings.usdRate || 105)
+          : Number(product.usdRate) || 105;
+
+        const marginPercent = useGlobalPricing
+          ? Number(server1Settings.profit || 0)
+          : Number(product.marginPercent) || 0;
 
         const costInr =
           liveProvider.costUsd * usdRate;
