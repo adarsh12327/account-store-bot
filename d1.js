@@ -539,41 +539,96 @@ class WriteBatch {
   }
 }
 
-async function acquireLock() {
-  const holder = crypto.randomUUID();
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    const response = await api("/lock/acquire", {
-      holder,
-      ttlMs: 30000,
-    });
+let localLockTail = Promise.resolve();
+const localHolders = new Set();
 
-    if (response.acquired) {
-      return holder;
-    }
-
-    await sleep(100 + Math.floor(Math.random() * 150));
-  }
-
-  throw new Error("D1 transaction lock timeout");
+async function acquireLocalLock() {
+  let release;
+  const previous = localLockTail;
+  localLockTail = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  const holder = `local-${crypto.randomUUID()}`;
+  localHolders.add(holder);
+  return holder;
 }
 
-async function releaseLock(holder) {
+async function releaseLocalLock(holder) {
+  if (localHolders.has(holder)) {
+    localHolders.delete(holder);
+  }
+  // Advance the local mutex queue.
+  // The promise resolver is stored on the holder map below.
+}
+
+const localResolvers = new Map();
+async function acquireProcessLock() {
+  const previous = localLockTail;
+  let resolveCurrent;
+  localLockTail = new Promise((resolve) => {
+    resolveCurrent = resolve;
+  });
+  await previous;
+  const holder = `process-${crypto.randomUUID()}`;
+  localResolvers.set(holder, resolveCurrent);
+  return holder;
+}
+
+async function releaseProcessLock(holder) {
+  const resolve = localResolvers.get(holder);
+  if (resolve) {
+    localResolvers.delete(holder);
+    resolve();
+  }
+}
+
+async function acquireLock() {
+  const holder = crypto.randomUUID();
+
   try {
-    await api("/lock/release", { holder });
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      const response = await api("/lock/acquire", {
+        holder,
+        ttlMs: 30000,
+      });
+
+      if (response.acquired) return { type: "worker", holder };
+
+      await sleep(100 + Math.floor(Math.random() * 150));
+    }
+
+    throw new Error("D1 transaction lock timeout");
+  } catch (error) {
+    if (error?.status !== 404) throw error;
+    return { type: "process", holder: await acquireProcessLock() };
+  }
+}
+
+async function releaseLock(lock) {
+  if (!lock) return;
+
+  if (lock.type === "process") {
+    await releaseProcessLock(lock.holder);
+    return;
+  }
+
+  try {
+    await api("/lock/release", { holder: lock.holder });
   } catch (error) {
     console.error("[D1] lock release failed:", error.message);
   }
 }
 
 async function runTransaction(callback) {
-  const holder = await acquireLock();
+  const lock = await acquireLock();
   try {
     const txn = new Transaction();
     const result = await callback(txn);
     await txn.commit();
     return result;
   } finally {
-    await releaseLock(holder);
+    await releaseLock(lock);
   }
 }
 
