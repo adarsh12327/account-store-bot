@@ -68,7 +68,18 @@ async function batch(statements) {
 }
 
 function deepClone(value) {
-  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+  if (value === undefined || value === null) return value;
+  if (value instanceof Date) return new Date(value.getTime());
+  if (isServerTimestamp(value) || isDeleteField(value) || isIncrement(value)) {
+    return { ...value };
+  }
+  if (Array.isArray(value)) return value.map(deepClone);
+  if (typeof value === "object") {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) out[key] = deepClone(item);
+    return out;
+  }
+  return value;
 }
 
 const SERVER_TIMESTAMP = Symbol("d1.serverTimestamp");
