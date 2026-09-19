@@ -48,6 +48,7 @@ async function showMainMenu(ctx, user = null, edit = false) {
   // working even if a settings/API read temporarily fails.
   let botUsername = "";
   let referralRate = 10;
+  const FALLBACK_BOT_USERNAME = "account_stores_bot";
 
   try {
     const settings = await db.getSettings();
@@ -78,6 +79,10 @@ async function showMainMenu(ctx, user = null, edit = false) {
     } catch (err) {
       logger.warn("Unable to resolve Telegram bot username for home referral link.");
     }
+  }
+
+  if (!botUsername) {
+    botUsername = FALLBACK_BOT_USERNAME;
   }
 
   let referralText =
