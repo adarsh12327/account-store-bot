@@ -2851,6 +2851,19 @@ function registerServer1Handler(bot) {
         // Acknowledge Telegram callback immediately.
         await answer(ctx);
 
+        // Server 1 can be disabled from Admin Settings at any time.
+        // Settings are cached, so this check is fast and does not hit D1
+        // on every click when the cache is warm.
+        const server1Settings = await db.getSettings();
+        if (server1Settings.server1Enabled === false) {
+          await editScreen(
+            ctx,
+            "🖥️ <b>Server 1</b>\n\n🔴 Server 1 is currently disabled.",
+            mainKeyboard()
+          );
+          return;
+        }
+
         const instant = getInstantServer1Catalog();
 
         if (!instant) {
@@ -3074,6 +3087,19 @@ function registerServer1Handler(bot) {
 
         const productId =
           ctx.match[1];
+
+        // Re-check the cached Admin setting before a purchase so a
+        // Server 1 disable takes effect even if the user already has
+        // an old product screen open.
+        const server1Settings = await db.getSettings();
+        if (server1Settings.server1Enabled === false) {
+          await answer(
+            ctx,
+            "🔴 Server 1 is currently disabled.",
+            true
+          );
+          return;
+        }
 
         const {
           catalog,
@@ -3639,10 +3665,15 @@ function registerServer1Handler(bot) {
         // Start automatic OTP monitor.
         // It will detect OTP, provider expiry, timeout and refund when required.
         setImmediate(() => {
-          monitorServer1Activation({
+          const otpWaitMinutes =
+          Number(
+            (await db.getSettings()).server1OtpWaitMinutes || 20
+          );
+
+        monitorServer1Activation({
             orderId: order.orderId,
             activationId: activation.activationId,
-            waitMinutes: 20,
+            waitMinutes: otpWaitMinutes,
           }).catch((monitorErr) => {
             logger.error(
               `Server 1 OTP monitor crashed: order=${order.orderId}`,
