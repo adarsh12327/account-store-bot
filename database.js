@@ -991,6 +991,18 @@ async function approveDeposit(depositId, adminId) {
       referralReferrerId: referrerId,
     };
   });
+
+  // Refresh the hot user cache immediately after a successful approval.
+  // Otherwise My Wallet can temporarily show the pre-approval balance.
+  const approvedUserId = String(result?.userId || "").trim();
+  if (approvedUserId) {
+    userReadCache.delete(approvedUserId);
+  }
+
+  // IMPORTANT: return the transaction result to the admin handler.
+  // Without this, the deposit is committed but the handler receives
+  // undefined and crashes while rendering the approval confirmation.
+  return result;
 }
 
 /**
