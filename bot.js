@@ -34,7 +34,6 @@ const { registerAdminOrdersHandler } = require("./handlers/adminOrders");
 const { registerAdminSettingsHandler } = require("./handlers/adminSettings");
 const { registerAdminBroadcastHandler } = require("./handlers/adminBroadcast");
 const { registerAdminStatsHandler } = require("./handlers/adminStats");
-const { startFamAppWatcher } = require("./utils/famappWatcher");
 
 const bot = new Telegraf(config.botToken);
 
@@ -115,10 +114,8 @@ bot.catch((err, ctx) => {
 module.exports = { bot, textSteps };
 
 if (require.main === module) {
-  // Railway runs this file as a long-lived Node process. Start the
-  // Gmail watcher only in polling/worker mode, never when imported by
-  // a serverless webhook entry point.
-  startFamAppWatcher(bot);
+  // FamApp auto-verification is event-driven from the deposit flow.
+  // No background Gmail/Firestore polling is started here.
 
   bot.launch()
     .then(() => console.log("[INFO] Telegram bot started in polling mode"))
