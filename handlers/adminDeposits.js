@@ -490,6 +490,39 @@ function registerAdminDepositsHandler(bot) {
 
 
         // ----------------------------------------------------------
+        // Notify referrer about successful referral commission
+        // ----------------------------------------------------------
+
+        if (
+          deposit.referralReferrerId &&
+          Number(deposit.referralCommission || 0) > 0
+        ) {
+          await ctx.telegram
+            .sendMessage(
+              String(deposit.referralReferrerId),
+
+              `🎉 <b>Referral Commission Received!</b>\n\n` +
+              `👤 Your referred user made a deposit.\n` +
+              `💰 Deposit: ₹${formatAmount(deposit.amount)}\n` +
+              `💸 Commission: ₹${formatAmount(deposit.referralCommission)}\n` +
+              `📈 Rate: ${formatAmount(deposit.referralRate)}%\n\n` +
+              `💳 Commission has been added to your wallet.`,
+
+              {
+                parse_mode: "HTML",
+              }
+            )
+            .catch(
+              (err) =>
+                logger.error(
+                  "Failed to notify referrer of referral commission",
+                  err
+                )
+            );
+        }
+
+
+        // ----------------------------------------------------------
         // Notify user
         // ----------------------------------------------------------
 
