@@ -196,10 +196,34 @@ async function showBlockedScreen(bot, ctx, telegramId) {
   }
 }
 
+async function fastCallbackAck(ctx) {
+  if (!ctx.callbackQuery) return;
+
+  // Remove Telegram's callback spinner immediately.
+  // Do not let Firestore / access checks delay this.
+  await ctx.answerCbQuery().catch(() => {});
+
+  // Give the user an immediate visual response. The real handler will
+  // replace this same message as soon as its data is ready.
+  try {
+    await ctx.editMessageText(
+      "⏳ <b>Loading...</b>",
+      { parse_mode: "HTML" }
+    );
+  } catch (_) {
+    // Some callbacks may already have a non-editable message.
+    // The callback acknowledgement above is still enough.
+  }
+}
+
 async function accessGuard(bot, ctx, next) {
   const telegramId = ctx.from?.id;
 
   if (!telegramId) return;
+
+  // ALWAYS acknowledge + visually respond to button taps first.
+  // No Firestore or Telegram membership lookup is allowed before this.
+  await fastCallbackAck(ctx);
 
   // Admins are never blocked.
   if (isAdmin(telegramId)) {
@@ -212,9 +236,7 @@ async function accessGuard(bot, ctx, next) {
     return next();
   }
 
-  // IMPORTANT: continue immediately. Security runs in the background.
-  // This keeps every inline button responsive even during a slow
-  // Firestore or Telegram API request.
+  // Security is strictly background-only.
   showBlockedScreen(bot, ctx, telegramId).catch(() => {});
 
   return next();
