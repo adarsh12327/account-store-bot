@@ -26,6 +26,7 @@ const {
   mainMenu,
   forceJoinKeyboard,
 } = require("../keyboards/user");
+const { primeAccessCache } = require("../utils/accessGuard");
 
 
 /**
@@ -195,6 +196,15 @@ async function runBackgroundStart(
 
     const settings =
       await db.getSettings();
+
+    // Warm the global access cache after /start so the first button
+    // click does not wait for Firestore or Telegram membership checks.
+    await primeAccessCache(
+      bot,
+      telegramId,
+      settings,
+      user
+    );
 
     const admin =
       isAdmin(telegramId);
