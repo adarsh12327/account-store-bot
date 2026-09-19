@@ -2019,7 +2019,7 @@ async function loadServer1Catalog(options = {}) {
 // 🔄 SERVER 1 BACKGROUND AUTO REFRESH
 // ------------------------------------------------------------
 
-const SERVER1_AUTO_REFRESH_INTERVAL = 5 * 60 * 1000;
+const SERVER1_AUTO_REFRESH_INTERVAL = 10 * 60 * 1000;
 
 let server1AutoRefreshTimer = null;
 
