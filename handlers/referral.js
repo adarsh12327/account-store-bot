@@ -64,14 +64,8 @@ function registerReferralHandler(bot) {
     try {
       await ctx.answerCbQuery().catch(() => {});
 
-      const snapshotUser =
-        typeof db.getUserSnapshot === "function"
-          ? db.getUserSnapshot(ctx.from.id)
-          : null;
-      const snapshotSettings =
-        typeof db.getSettingsSnapshot === "function"
-          ? db.getSettingsSnapshot()
-          : {};
+      const snapshotUser = await db.getUser(ctx.from.id);
+      const snapshotSettings = await db.getSettings();
 
       const botUsername = String(
         snapshotSettings?.botUsername ||
