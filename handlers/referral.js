@@ -74,26 +74,44 @@ function registerReferralHandler(bot) {
         return;
       }
 
-      const settings = await db.getSettings();
+      let settings = {};
+      try {
+        settings = await db.getSettings();
+      } catch (settingsErr) {
+        logger.warn(
+          `Referral settings read failed | user=${ctx.from?.id || "unknown"}`
+        );
+      }
 
-      // Prefer the configured username, but automatically fall back to
-      // Telegram's real bot username. This keeps Refer & Earn working even
-      // when the admin has not manually saved botUsername in Firestore.
-      let botUsername = String(settings.botUsername || "")
+      // Resolve the bot username from the most reliable available source.
+      // Do not make Refer & Earn depend on the optional Firestore setting.
+      let botUsername = String(
+        settings?.botUsername ||
+        ctx.botInfo?.username ||
+        ctx.telegram?.botInfo?.username ||
+        ""
+      )
         .replace(/^@/, "")
         .trim();
 
       if (!botUsername) {
-        const botInfo = await bot.telegram.getMe();
-        botUsername = String(botInfo?.username || "")
-          .replace(/^@/, "")
-          .trim();
+        try {
+          const botInfo = await bot.telegram.getMe();
+          botUsername = String(botInfo?.username || "")
+            .replace(/^@/, "")
+            .trim();
+        } catch (usernameErr) {
+          logger.error(
+            `Unable to resolve bot username | user=${ctx.from?.id || "unknown"}`,
+            usernameErr
+          );
+        }
       }
 
       if (!botUsername) {
         await editScreen(
           ctx,
-          "⚠️ <b>Referral system is temporarily unavailable.</b>\n\nPlease try again later."
+          "⚠️ <b>Referral link is temporarily unavailable.</b>\n\nPlease try again in a moment."
         );
         return;
       }
