@@ -3196,7 +3196,16 @@ function registerServer1Handler(bot) {
         const {
           catalog,
         } =
-          await loadServer1Catalog();
+          getInstantServer1Catalog() || {};
+
+        if (!Array.isArray(catalog) || !catalog.length) {
+          await answer(
+            ctx,
+            "⚠️ Server 1 catalog is temporarily unavailable. Please refresh and try again.",
+            true
+          );
+          return;
+        }
 
         const product =
           catalog.find(
