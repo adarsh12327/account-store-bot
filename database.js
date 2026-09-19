@@ -46,6 +46,11 @@ let settingsReadCache = null;
 let settingsReadCacheAt = 0;
 let settingsReadPromise = null;
 
+// The migration may have preserved an older settings document ID.
+// Keep the canonical config document repaired from that legacy data
+// so a single admin update can never hide the rest of the settings.
+let settingsResolvedDocId = SETTINGS_DOC_ID;
+
 const DEFAULT_SETTINGS = {
   adminId: "",
   referralPercent: 10,
@@ -87,16 +92,18 @@ async function registerUserReferral(userId, referrerId) {
     return { registered: false, reason: "SELF_REFERRAL" };
   }
 
+  // Resolve the effective settings first. This also handles a
+  // migrated settings document whose ID was not "config".
+  const settings = await getSettings();
+
   const userRef = db.collection(USERS).doc(userId);
   const referrerRef = db.collection(USERS).doc(referrerId);
-  const settingsRef = db.collection(SETTINGS).doc(SETTINGS_DOC_ID);
 
   return db.runTransaction(async (txn) => {
-    const [userSnap, referrerSnap, settingsSnap] =
+    const [userSnap, referrerSnap] =
       await Promise.all([
         txn.get(userRef),
         txn.get(referrerRef),
-        txn.get(settingsRef),
       ]);
 
     if (!userSnap.exists) {
@@ -125,10 +132,6 @@ async function registerUserReferral(userId, referrerId) {
         referralRate: Number(user.referralRate || 0),
       };
     }
-
-    const settings = settingsSnap.exists
-      ? settingsSnap.data() || {}
-      : {};
 
     const globalRate = Number(
       settings.referralPercent ?? 10
@@ -1994,33 +1997,76 @@ async function getSettings() {
 
   settingsReadPromise = (async () => {
     try {
-      const ref = db.collection(SETTINGS).doc(SETTINGS_DOC_ID);
-      const snap = await ref.get();
+      const configRef = db
+        .collection(SETTINGS)
+        .doc(SETTINGS_DOC_ID);
 
-      if (!snap.exists) {
-        // Migration may preserve a legacy/non-config document ID.
-        // Fall back to the first settings document before using defaults.
-        const settingsSnap = await db.collection(SETTINGS).limit(1).get();
-        const first = settingsSnap.docs[0];
+      const configSnap = await configRef.get();
 
-        settingsReadCache = first?.exists
-          ? {
-              ...DEFAULT_SETTINGS,
-              ...first.data(),
-            }
-          : { ...DEFAULT_SETTINGS };
-      } else {
-        settingsReadCache = {
-          ...DEFAULT_SETTINGS,
-          ...snap.data(),
-        };
+      // Read any migrated legacy settings document as a backup source.
+      // Config values take precedence, so an intentional admin change
+      // is never overwritten by old data.
+      const settingsSnap = await db
+        .collection(SETTINGS)
+        .get();
+
+      const legacyDocs = settingsSnap.docs.filter(
+        (doc) => doc.id !== SETTINGS_DOC_ID
+      );
+
+      const legacy = legacyDocs[0];
+      const legacyData = legacy?.exists
+        ? legacy.data() || {}
+        : {};
+
+      if (legacy?.exists) {
+        settingsResolvedDocId = legacy.id;
       }
 
+      const configData = configSnap.exists
+        ? configSnap.data() || {}
+        : {};
+
+      settingsReadCache = {
+        ...DEFAULT_SETTINGS,
+        ...legacyData,
+        ...configData,
+      };
+
+      // Repair the canonical "config" document by filling only keys
+      // that are missing there. This restores settings lost when an
+      // update was accidentally written to a new sparse config doc.
+      if (legacy?.exists) {
+        const missing = {};
+
+        for (const [key, value] of Object.entries(legacyData)) {
+          if (!Object.prototype.hasOwnProperty.call(configData, key)) {
+            missing[key] = value;
+          }
+        }
+
+        if (Object.keys(missing).length > 0) {
+          await configRef.set(missing, { merge: true });
+        }
+      } else if (!configSnap.exists) {
+        // No settings document existed at all. Create the canonical
+        // document only when we have no migrated data to preserve.
+        await configRef.set(
+          settingsReadCache,
+          { merge: true }
+        );
+      }
+
+      settingsResolvedDocId = SETTINGS_DOC_ID;
       settingsReadCacheAt = Date.now();
+
       return settingsReadCache;
     } catch (err) {
-      // Firestore quota/rate-limit must never make navigation unusable.
-      // Return the safe local defaults so UI buttons can still render.
+      // Never replace a known-good cache with blank defaults.
+      if (settingsReadCache) {
+        return settingsReadCache;
+      }
+
       settingsReadCache = {
         ...DEFAULT_SETTINGS,
       };
@@ -2035,7 +2081,17 @@ async function getSettings() {
 }
 
 async function updateSettings(updates = {}) {
-  const ref = db.collection(SETTINGS).doc(SETTINGS_DOC_ID);
+  // Always load/repair settings first so updates merge into the
+  // complete canonical document instead of creating a sparse one.
+  await getSettings();
+
+  const docId =
+    settingsResolvedDocId || SETTINGS_DOC_ID;
+
+  const ref = db
+    .collection(SETTINGS)
+    .doc(docId);
+
   await ref.set(updates, { merge: true });
 
   settingsReadCache = {
