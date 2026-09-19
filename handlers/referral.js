@@ -64,15 +64,27 @@ function registerReferralHandler(bot) {
     try {
       await ctx.answerCbQuery();
 
-      const user = await db.getUser(ctx.from.id);
+      let user = null;
 
-      if (!user) {
-        await editScreen(
-          ctx,
-          "⚠️ <b>User account not found.</b>\n\nPlease use /start again."
+      try {
+        user = await db.getUser(ctx.from.id);
+      } catch (userErr) {
+        logger.warn(
+          `Referral user read failed | user=${ctx.from?.id || "unknown"}`
         );
-        return;
       }
+
+      // Referral navigation must remain usable even when Firestore is
+      // temporarily rate-limited. Use Telegram profile data for the
+      // display-only parts and zero stats until Firestore recovers.
+      user = user || {
+        telegramId: String(ctx.from.id),
+        firstName: ctx.from?.first_name || "",
+        lastName: ctx.from?.last_name || "",
+        username: ctx.from?.username || "",
+        referrerId: null,
+        referralRateOverride: null,
+      };
 
       let settings = {};
       try {
