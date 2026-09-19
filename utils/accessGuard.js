@@ -1,15 +1,23 @@
 /**
  * Global user-access guard.
  *
- * Railway runs the bot as a long-lived Node process, so normal in-memory
- * sessions are fine. This guard is intentionally kept separate from the
- * individual handlers so maintenance / force-join cannot be bypassed by
- * using an old inline button.
+ * Railway runs the bot as a long-lived Node process. Keep short-lived
+ * caches here so every button click does not perform multiple Firestore
+ * reads and Telegram membership checks.
  */
-
 const db = require("../database");
 const { isAdmin, isChannelMember } = require("./helpers");
 const { forceJoinKeyboard } = require("../keyboards/user");
+
+const SETTINGS_TTL_MS = 15_000;
+const USER_TTL_MS = 10_000;
+const MEMBERSHIP_TTL_MS = 15_000;
+
+let settingsCache = null;
+let settingsCacheAt = 0;
+
+const userCache = new Map();
+const membershipCache = new Map();
 
 function isStartCommand(ctx) {
   const text = String(ctx.message?.text || "").trim();
@@ -25,26 +33,63 @@ function isJoinVerification(ctx) {
   return String(ctx.callbackQuery?.data || "") === "verify_join";
 }
 
+async function getCachedSettings() {
+  const now = Date.now();
+
+  if (settingsCache && now - settingsCacheAt < SETTINGS_TTL_MS) {
+    return settingsCache;
+  }
+
+  const settings = await db.getSettings();
+  settingsCache = settings;
+  settingsCacheAt = now;
+  return settings;
+}
+
+async function getCachedUser(telegramId) {
+  const id = String(telegramId);
+  const now = Date.now();
+  const cached = userCache.get(id);
+
+  if (cached && now - cached.at < USER_TTL_MS) {
+    return cached.user;
+  }
+
+  const user = await db.getUser(telegramId);
+  userCache.set(id, { user, at: now });
+  return user;
+}
+
+async function getCachedMembership(bot, channel, telegramId) {
+  const key = `${channel}:${telegramId}`;
+  const now = Date.now();
+  const cached = membershipCache.get(key);
+
+  if (cached && now - cached.at < MEMBERSHIP_TTL_MS) {
+    return cached.joined;
+  }
+
+  const joined = await isChannelMember(bot, channel, telegramId);
+  membershipCache.set(key, { joined, at: now });
+  return joined;
+}
+
 async function accessGuard(bot, ctx, next) {
   const telegramId = ctx.from?.id;
 
-  // Telegram updates without a user should never reach user flows.
   if (!telegramId) return;
 
-  // Admin is never blocked by maintenance / force-join.
   if (isAdmin(telegramId)) {
     return next();
   }
 
-  // These routes must remain available so a blocked user can recover.
   if (isStartCommand(ctx) || isCancelCommand(ctx) || isJoinVerification(ctx)) {
     return next();
   }
 
-  const settings = await db.getSettings();
+  const settings = await getCachedSettings();
+  const user = await getCachedUser(telegramId);
 
-  // Banned users are blocked from all callbacks/messages after /start.
-  const user = await db.getUser(telegramId);
   if (user?.banned) {
     if (ctx.callbackQuery) {
       await ctx.answerCbQuery("🚫 You are banned from using this bot.", {
@@ -56,7 +101,6 @@ async function accessGuard(bot, ctx, next) {
     return;
   }
 
-  // Maintenance blocks all normal user activity.
   if (settings.maintenance) {
     if (ctx.callbackQuery) {
       await ctx.answerCbQuery("🛠️ Bot is under maintenance.", {
@@ -68,9 +112,8 @@ async function accessGuard(bot, ctx, next) {
     return;
   }
 
-  // Force-join is checked on every user interaction, not only /start.
   if (settings.forceChannel) {
-    const joined = await isChannelMember(
+    const joined = await getCachedMembership(
       bot,
       settings.forceChannel,
       telegramId
