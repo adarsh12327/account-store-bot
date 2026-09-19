@@ -573,7 +573,7 @@ function registerAdminSettingsHandler(bot) {
 
       await ctx.editMessageText(text, {
         parse_mode: "HTML",
-        ...settingsMenu(s),
+        ...settingsMenu(updated),
       }).catch((err) => {
         const msg = String(err.message || "").toLowerCase();
         if (!msg.includes("message is not modified")) {
@@ -616,7 +616,7 @@ function registerAdminSettingsHandler(bot) {
 
       await ctx.editMessageText(text, {
         parse_mode: "HTML",
-        ...settingsMenu(s),
+        ...settingsMenu(updated),
       }).catch((err) => {
         const msg = String(err.message || "").toLowerCase();
         if (!msg.includes("message is not modified")) {
