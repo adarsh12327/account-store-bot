@@ -52,31 +52,46 @@ function registerWalletHandler(bot) {
 
   bot.action("menu_wallet", async (ctx) => {
     try {
-      await ctx.answerCbQuery();
+      await ctx.answerCbQuery().catch(() => {});
 
-      const user = await db.getUser(ctx.from.id);
-
-      if (!user) {
-        await editScreen(
-          ctx,
-          "⚠️ <b>User account not found.</b>\n\nPlease use /start again.",
-          backToMenu()
-        );
-        return;
-      }
-
-      const text =
-        `💰 <b>Your Wallet</b>\n\n` +
-        `💵 Current Balance: ₹${formatAmount(user.balance)}\n` +
-        `💳 Total Deposited: ₹${formatAmount(user.totalDeposit)}\n` +
-        `⏳ Pending Deposit: ₹${formatAmount(user.pendingDeposit)}\n` +
-        `📦 Total Orders: ${user.totalOrders || 0}`;
-
+      // Render immediately. Firestore work happens after the callback
+      // has been acknowledged and the Telegram screen is updated.
       await editScreen(
         ctx,
-        text,
+        "💰 <b>Your Wallet</b>\n\n⏳ Loading wallet...",
         walletMenu()
-      );
+      ).catch(() => {});
+
+      setImmediate(async () => {
+        try {
+          const user = await db.getUser(ctx.from.id);
+
+          if (!user) {
+            await editScreen(
+              ctx,
+              "⚠️ <b>User account not found.</b>\n\nPlease use /start again.",
+              backToMenu()
+            );
+            return;
+          }
+
+          const text =
+            `💰 <b>Your Wallet</b>\n\n` +
+            `💵 Current Balance: ₹${formatAmount(user.balance)}\n` +
+            `💳 Total Deposited: ₹${formatAmount(user.totalDeposit)}\n` +
+            `⏳ Pending Deposit: ₹${formatAmount(user.pendingDeposit)}\n` +
+            `📦 Total Orders: ${user.totalOrders || 0}`;
+
+          await editScreen(ctx, text, walletMenu());
+        } catch (err) {
+          logger.error("Background wallet load failed", err);
+          await editScreen(
+            ctx,
+            "💰 <b>Your Wallet</b>\n\n⚠️ Wallet data is temporarily unavailable.\nPlease try again shortly.",
+            backToMenu()
+          ).catch(() => {});
+        }
+      });
 
     } catch (err) {
       logger.error("Error in menu_wallet action", err);
