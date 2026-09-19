@@ -1998,9 +1998,17 @@ async function getSettings() {
       const snap = await ref.get();
 
       if (!snap.exists) {
-        // Do not make a second Firestore write while the quota is under
-        // pressure. DEFAULT_SETTINGS is sufficient for the UI.
-        settingsReadCache = { ...DEFAULT_SETTINGS };
+        // Migration may preserve a legacy/non-config document ID.
+        // Fall back to the first settings document before using defaults.
+        const settingsSnap = await db.collection(SETTINGS).limit(1).get();
+        const first = settingsSnap.docs[0];
+
+        settingsReadCache = first?.exists
+          ? {
+              ...DEFAULT_SETTINGS,
+              ...first.data(),
+            }
+          : { ...DEFAULT_SETTINGS };
       } else {
         settingsReadCache = {
           ...DEFAULT_SETTINGS,
