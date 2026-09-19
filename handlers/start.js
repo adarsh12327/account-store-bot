@@ -422,7 +422,10 @@ function registerStartHandler(bot) {
     try {
       await ctx.answerCbQuery().catch(() => {});
 
-      const settings = await db.getSettings();
+      const settings =
+        typeof db.getSettingsSnapshot === "function"
+          ? db.getSettingsSnapshot()
+          : {};
       const salesChannel = String(settings.salesChannel || "").trim();
 
       if (!salesChannel) {
@@ -476,38 +479,10 @@ function registerStartHandler(bot) {
     try {
       await ctx.answerCbQuery();
 
-      const telegramId =
-        ctx.from.id;
-
-      const user =
-        await db.getUser(
-          telegramId
-        );
-
-      if (!user) {
-        await showMainMenu(
-          ctx,
-          null,
-          true
-        );
-
-        return;
-      }
-
-      if (user.banned) {
-        await ctx.answerCbQuery(
-          "🚫 You are banned from using this bot.",
-          {
-            show_alert: true,
-          }
-        );
-
-        return;
-      }
-
+      // Main Menu is pure UI navigation. Do not wait for Firestore.
       await showMainMenu(
         ctx,
-        user,
+        null,
         true
       );
 
