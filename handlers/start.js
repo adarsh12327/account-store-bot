@@ -43,28 +43,46 @@ async function showMainMenu(ctx, user = null, edit = false) {
     ctx.from?.first_name || "there";
 
   // Build the referral link directly on the home screen.
-  // The visible URL is also a clickable Telegram HTML link.
+  // Prefer Telegraf's cached botInfo, then configured username,
+  // and only then call Telegram getMe(). This keeps the home screen
+  // working even if a settings/API read temporarily fails.
   let botUsername = "";
+  let referralRate = 10;
 
   try {
     const settings = await db.getSettings();
-    botUsername = String(settings.botUsername || "")
+
+    referralRate = Number(settings?.referralPercent ?? 10);
+    if (!Number.isFinite(referralRate) || referralRate < 0 || referralRate > 100) {
+      referralRate = 10;
+    }
+
+    botUsername = String(
+      settings?.botUsername ||
+      ctx.botInfo?.username ||
+      ctx.telegram?.botInfo?.username ||
+      ""
+    )
       .replace(/^@/, "")
       .trim();
+  } catch (err) {
+    logger.warn("Unable to load settings for home referral block.");
+  }
 
-    if (!botUsername) {
+  if (!botUsername) {
+    try {
       const botInfo = await ctx.telegram.getMe();
       botUsername = String(botInfo?.username || "")
         .replace(/^@/, "")
         .trim();
+    } catch (err) {
+      logger.warn("Unable to resolve Telegram bot username for home referral link.");
     }
-  } catch (err) {
-    logger.warn("Unable to load bot username for home referral link.");
   }
 
   let referralText =
     `👥 <b>Refer &amp; Earn</b>\n` +
-    `🎁 Earn <b>10%</b> commission on every referred user's deposit.`;
+    `🎁 Earn <b>${referralRate}%</b> commission on every referred user's deposit.`;
 
   if (botUsername) {
     const referralLink =
