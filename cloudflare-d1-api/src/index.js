@@ -86,6 +86,10 @@ export default {
         const now = Date.now();
         const expiresAt = now + ttlMs;
 
+        await env.DB.prepare(
+          "CREATE TABLE IF NOT EXISTS d1_mutex (id TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at INTEGER NOT NULL)"
+        ).run();
+
         await env.DB.batch([
           env.DB.prepare("DELETE FROM d1_mutex WHERE id = ? AND expires_at <= ?").bind("global", now),
           env.DB.prepare("INSERT OR IGNORE INTO d1_mutex (id, holder, expires_at) VALUES (?, ?, ?)").bind("global", holder, expiresAt),
