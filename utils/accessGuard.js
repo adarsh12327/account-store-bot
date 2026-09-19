@@ -207,28 +207,14 @@ async function fastCallbackAck(ctx) {
 }
 
 async function accessGuard(bot, ctx, next) {
-  const telegramId = ctx.from?.id;
-
-  if (!telegramId) return;
-
-  // ALWAYS acknowledge + visually respond to button taps first.
-  // No Firestore or Telegram membership lookup is allowed before this.
-  await fastCallbackAck(ctx);
-
-  // Admins are never blocked.
-  if (isAdmin(telegramId)) {
-    return next();
-  }
-
-  // /start has its own background initialization/security flow.
-  // /cancel and Verify must always reach their handlers.
-  if (isStartCommand(ctx) || isCancelCommand(ctx) || isJoinVerification(ctx)) {
-    return next();
-  }
-
-  // Security is strictly background-only.
-  showBlockedScreen(bot, ctx, telegramId).catch(() => {});
-
+  // ZERO Firestore / membership work in the callback path.
+  // Individual handlers acknowledge their own callback and render
+  // their own result. This middleware must never consume the callback
+  // query before the handler gets it.
+  //
+  // Access/security enforcement is handled by /start and other
+  // background processes; button navigation stays independent of
+  // Firestore quota and is therefore immediately responsive.
   return next();
 }
 
