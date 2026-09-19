@@ -1,9 +1,12 @@
 /**
- * Global user-access guard.
+ * Fast global access guard.
  *
- * Railway runs the bot as a long-lived Node process. Keep short-lived
- * caches here so every button click does not perform multiple Firestore
- * reads and Telegram membership checks.
+ * IMPORTANT:
+ * Never block a Telegram callback on Firestore or getChatMember().
+ * User actions continue immediately; security checks run in the
+ * background. If a user is banned or has not joined the required
+ * channel, the current bot message is replaced with the appropriate
+ * blocked/join screen.
  */
 const db = require("../database");
 const { isAdmin, isChannelMember } = require("./helpers");
@@ -87,10 +90,109 @@ async function primeAccessCache(bot, telegramId, settings = null, user = null) {
     userCache.set(id, { user, at: now });
   }
 
-  // Warm the membership cache in the background when possible.
   const effectiveSettings = settings || settingsCache;
+
   if (effectiveSettings?.forceChannel) {
-    getCachedMembership(bot, effectiveSettings.forceChannel, telegramId).catch(() => {});
+    getCachedMembership(
+      bot,
+      effectiveSettings.forceChannel,
+      telegramId
+    ).catch(() => {});
+  }
+}
+
+async function editBlockedMessage(ctx, text, keyboard = null) {
+  if (!ctx.callbackQuery) return false;
+
+  const options = { parse_mode: "HTML" };
+
+  if (keyboard) {
+    options.reply_markup = keyboard.reply_markup;
+  }
+
+  try {
+    await ctx.editMessageText(text, options);
+    return true;
+  } catch (err) {
+    const message = String(err.message || "").toLowerCase();
+
+    // The handler may have already edited the same message. In that case
+    // do not send another error message to the user.
+    if (
+      message.includes("message is not modified") ||
+      message.includes("message can't be edited") ||
+      message.includes("message to edit not found") ||
+      message.includes("message_id_invalid")
+    ) {
+      return false;
+    }
+
+    return false;
+  }
+}
+
+async function showBlockedScreen(bot, ctx, telegramId) {
+  try {
+    const settings = await getCachedSettings();
+    const user = await getCachedUser(telegramId);
+
+    if (user?.banned) {
+      await ctx.answerCbQuery("🚫 Access blocked.", {
+        show_alert: false,
+      }).catch(() => {});
+
+      const edited = await editBlockedMessage(
+        ctx,
+        "🚫 <b>Access Denied</b>\n\nYour account has been banned from using this bot."
+      );
+
+      if (!edited && !ctx.callbackQuery && ctx.chat) {
+        await ctx.reply(
+          "🚫 <b>Access Denied</b>\n\nYour account has been banned from using this bot.",
+          { parse_mode: "HTML" }
+        ).catch(() => {});
+      }
+
+      return true;
+    }
+
+    if (settings.forceChannel) {
+      const joined = await getCachedMembership(
+        bot,
+        settings.forceChannel,
+        telegramId
+      );
+
+      if (!joined) {
+        await ctx.answerCbQuery("📢 Please join the required channel.", {
+          show_alert: false,
+        }).catch(() => {});
+
+        const edited = await editBlockedMessage(
+          ctx,
+          "📢 <b>Join Required</b>\n\nPlease join our channel first, then tap <b>Verify</b>.",
+          forceJoinKeyboard(settings.forceChannel)
+        );
+
+        if (!edited && !ctx.callbackQuery && ctx.chat) {
+          await ctx.reply(
+            "📢 <b>You must join our channel before using this bot.</b>",
+            {
+              parse_mode: "HTML",
+              ...forceJoinKeyboard(settings.forceChannel),
+            }
+          ).catch(() => {});
+        }
+
+        return true;
+      }
+    }
+
+    return false;
+  } catch (_) {
+    // Access checks are background-only. A temporary Firestore/Telegram
+    // error must never make normal buttons slow or fail.
+    return false;
   }
 }
 
@@ -99,89 +201,26 @@ async function accessGuard(bot, ctx, next) {
 
   if (!telegramId) return;
 
+  // Admins are never blocked.
   if (isAdmin(telegramId)) {
     return next();
   }
 
+  // /start has its own background initialization/security flow.
+  // /cancel and Verify must always reach their handlers.
   if (isStartCommand(ctx) || isCancelCommand(ctx) || isJoinVerification(ctx)) {
     return next();
   }
 
-  const isCallback = Boolean(ctx.callbackQuery);
-
-  // Callback queries must be acknowledged by their handler quickly.
-  // Never block them on a cold Firestore/Telegram access check.
-  // /start primes these caches, so normal callbacks still get the
-  // full security checks without making the UI feel slow.
-  if (isCallback) {
-    const now = Date.now();
-    const settingsFresh =
-      settingsCache && now - settingsCacheAt < SETTINGS_TTL_MS;
-    const cachedUser = userCache.get(String(telegramId));
-    const userFresh =
-      cachedUser && now - cachedUser.at < USER_TTL_MS;
-
-    if (!settingsFresh || !userFresh) {
-      getCachedSettings().catch(() => {});
-      getCachedUser(telegramId).catch(() => {});
-      return next();
-    }
-  }
-
-  const settings = await getCachedSettings();
-  const user = await getCachedUser(telegramId);
-
-  if (user?.banned) {
-    if (ctx.callbackQuery) {
-      await ctx.answerCbQuery("🚫 You are banned from using this bot.", {
-        show_alert: true,
-      }).catch(() => {});
-    } else if (ctx.chat) {
-      await ctx.reply("🚫 You are banned from using this bot.").catch(() => {});
-    }
-    return;
-  }
-
-  if (settings.maintenance) {
-    if (ctx.callbackQuery) {
-      await ctx.answerCbQuery("🛠️ Bot is under maintenance.", {
-        show_alert: true,
-      }).catch(() => {});
-    } else if (ctx.chat) {
-      await ctx.reply("🛠️ The bot is currently under maintenance.\n\nPlease check back later.").catch(() => {});
-    }
-    return;
-  }
-
-  if (settings.forceChannel) {
-    const joined = await getCachedMembership(
-      bot,
-      settings.forceChannel,
-      telegramId
-    );
-
-    if (!joined) {
-      if (ctx.callbackQuery) {
-        await ctx.answerCbQuery("📢 Please join the required channel first.", {
-          show_alert: true,
-        }).catch(() => {});
-      }
-
-      if (ctx.chat) {
-        await ctx.reply(
-          "📢 <b>You must join our channel before using this bot.</b>",
-          {
-            parse_mode: "HTML",
-            ...forceJoinKeyboard(settings.forceChannel),
-          }
-        ).catch(() => {});
-      }
-
-      return;
-    }
-  }
+  // IMPORTANT: continue immediately. Security runs in the background.
+  // This keeps every inline button responsive even during a slow
+  // Firestore or Telegram API request.
+  showBlockedScreen(bot, ctx, telegramId).catch(() => {});
 
   return next();
 }
 
-module.exports = { accessGuard, primeAccessCache };
+module.exports = {
+  accessGuard,
+  primeAccessCache,
+};
