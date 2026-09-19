@@ -55,7 +55,10 @@ function registerDepositHandler(bot) {
 
       await ctx.answerCbQuery();
 
-      const settings = await db.getSettings();
+      const settings =
+        typeof db.getSettingsSnapshot === "function"
+          ? db.getSettingsSnapshot()
+          : { minimumDeposit: 1, upiId: "", paymentQrFileId: "" };
 
       session.set(ctx.from.id, {
         step: "deposit_amount",
@@ -95,13 +98,11 @@ function registerDepositHandler(bot) {
     try {
       await ctx.answerCbQuery("Cancelled");
 
-      const user = await db.getUser(ctx.from.id);
-
       session.clear(ctx.from.id);
 
       await showMainMenu(
         ctx,
-        user,
+        null,
         true
       );
     } catch (err) {
@@ -125,7 +126,10 @@ function registerDepositHandler(bot) {
 
     deposit_amount: async (ctx, state) => {
 
-      const settings = await db.getSettings();
+      const settings =
+        typeof db.getSettingsSnapshot === "function"
+          ? db.getSettingsSnapshot()
+          : { minimumDeposit: 1, upiId: "", paymentQrFileId: "" };
 
       const amount = parseAmount(
         ctx.message.text,
