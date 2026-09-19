@@ -438,6 +438,10 @@ async function addBalance(telegramId, amount, { type, note, relatedId, bumpTotal
       relatedId,
     });
 
+    // Balance changed: invalidate the read cache so admin/user views
+    // immediately see the committed balance.
+    userReadCache.delete(userId);
+
     return { newBalance, transaction: record };
   });
 }
@@ -475,6 +479,10 @@ async function removeBalance(telegramId, amount, { type, note, relatedId } = {})
       note,
       relatedId,
     });
+
+    // Balance changed: invalidate the read cache so the next read
+    // fetches the committed D1 value instead of the old cached balance.
+    userReadCache.delete(userId);
 
     return { newBalance, transaction: record };
   });
