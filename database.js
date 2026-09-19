@@ -1987,7 +1987,8 @@ async function getSettings() {
       const snap = await ref.get();
 
       if (!snap.exists) {
-        await ref.set(DEFAULT_SETTINGS);
+        // Do not make a second Firestore write while the quota is under
+        // pressure. DEFAULT_SETTINGS is sufficient for the UI.
         settingsReadCache = { ...DEFAULT_SETTINGS };
       } else {
         settingsReadCache = {
@@ -1996,6 +1997,14 @@ async function getSettings() {
         };
       }
 
+      settingsReadCacheAt = Date.now();
+      return settingsReadCache;
+    } catch (err) {
+      // Firestore quota/rate-limit must never make navigation unusable.
+      // Return the safe local defaults so UI buttons can still render.
+      settingsReadCache = {
+        ...DEFAULT_SETTINGS,
+      };
       settingsReadCacheAt = Date.now();
       return settingsReadCache;
     } finally {
