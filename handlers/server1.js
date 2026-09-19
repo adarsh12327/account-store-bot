@@ -3726,13 +3726,13 @@ function registerServer1Handler(bot) {
 
         // Start automatic OTP monitor.
         // It will detect OTP, provider expiry, timeout and refund when required.
-        setImmediate(() => {
-          const otpWaitMinutes =
+        const otpWaitMinutes =
           Number(
-            (await db.getSettings()).server1OtpWaitMinutes || 20
+            db.getSettingsSnapshot?.().server1OtpWaitMinutes || 20
           );
 
-        monitorServer1Activation({
+        setImmediate(() => {
+          monitorServer1Activation({
             orderId: order.orderId,
             activationId: activation.activationId,
             waitMinutes: otpWaitMinutes,
