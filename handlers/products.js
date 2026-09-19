@@ -44,7 +44,10 @@ function registerProductsHandler(bot) {
         await ctx.answerCbQuery();
       } catch (_) {}
 
-      const settings = await db.getSettings();
+      const settings =
+        typeof db.getSettingsSnapshot === "function"
+          ? db.getSettingsSnapshot()
+          : { server1Enabled: true, server2Enabled: true };
 
       const serverButtons = [];
 
