@@ -4,7 +4,8 @@
   "description": "Telegram store bot built with Telegraf and Firebase Firestore.",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node bot.js",
+    "migrate:d1": "node scripts/migrate-firestore-to-d1.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
