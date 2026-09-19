@@ -47,7 +47,25 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ ok: true, service: "account-store-d1" });
+      try {
+        const row = await env.DB
+          .prepare("SELECT COUNT(*) AS count FROM firestore_documents")
+          .first();
+
+        return json({
+          ok: true,
+          service: "account-store-d1",
+          database: "connected",
+          documents: Number(row?.count || 0),
+        });
+      } catch (error) {
+        return json({
+          ok: false,
+          service: "account-store-d1",
+          database: "error",
+          error: String(error?.message || error),
+        }, 500);
+      }
     }
 
     if (!authorized(request, env)) {
