@@ -5,8 +5,11 @@
  * implementation, so production can continue using Firestore until the
  * D1 data has been verified.
  *
+ * Firebase credentials:
+ *   - Preferred: FIREBASE_SERVICE_ACCOUNT_JSON
+ *   - Local fallback: ./serviceAccountKey.json
+ *
  * Required environment variables:
- *   FIREBASE_SERVICE_ACCOUNT_JSON
  *   CLOUDFLARE_ACCOUNT_ID
  *   CLOUDFLARE_API_TOKEN
  *   CLOUDFLARE_D1_DATABASE_ID
@@ -17,6 +20,8 @@
 
 require("dotenv").config();
 
+const fs = require("fs");
+const path = require("path");
 const { initializeApp, cert, getApps } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
 
@@ -40,6 +45,36 @@ function required(name) {
   const value = String(process.env[name] || "").trim();
   if (!value) throw new Error(`Missing environment variable: ${name}`);
   return value;
+}
+
+function loadFirebaseServiceAccount() {
+  const envValue = String(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || "").trim();
+
+  if (envValue) {
+    try {
+      return JSON.parse(envValue);
+    } catch (error) {
+      throw new Error(
+        `FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON: ${error.message}`
+      );
+    }
+  }
+
+  const localPath = path.resolve(__dirname, "..", "serviceAccountKey.json");
+
+  if (!fs.existsSync(localPath)) {
+    throw new Error(
+      "Firebase credentials not found. Set FIREBASE_SERVICE_ACCOUNT_JSON or place serviceAccountKey.json in the project root."
+    );
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(localPath, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `serviceAccountKey.json is not valid JSON: ${error.message}`
+    );
+  }
 }
 
 function normalizeValue(value) {
@@ -139,10 +174,10 @@ async function main() {
   const accountId = required("CLOUDFLARE_ACCOUNT_ID");
   const databaseId = required("CLOUDFLARE_D1_DATABASE_ID");
   const token = required("CLOUDFLARE_API_TOKEN");
-  const serviceAccountJson = required("FIREBASE_SERVICE_ACCOUNT_JSON");
+  const serviceAccount = loadFirebaseServiceAccount();
 
   if (!getApps().length) {
-    initializeApp({ credential: cert(JSON.parse(serviceAccountJson)) });
+    initializeApp({ credential: cert(serviceAccount) });
   }
 
   const firestore = getFirestore();
