@@ -2506,34 +2506,19 @@ async function createServer1Order({
 
       const product = productSnap.data();
 
-      authoritativePrice =
-        Number(product.finalPrice || 0);
+      // Server 1 Buy already performs an authoritative live Grizzly
+      // price/stock check immediately before creating the order. Do not
+      // compare against products.finalPrice here: that field can be stale
+      // when global Admin pricing or provider pricing has changed.
+      // The requestedPrice is the freshly calculated live purchase price.
+      const productIsEnabled =
+        String(product.status || "enabled").toLowerCase() === "enabled";
 
-      if (
-        !Number.isFinite(authoritativePrice) ||
-        authoritativePrice <= 0
-      ) {
-        throw new Error("INVALID_PRODUCT_PRICE");
+      if (!productIsEnabled) {
+        throw new Error("PRODUCT_DISABLED");
       }
 
-      // The local catalog may be stale if the background
-      // provider sync changed the price just before purchase.
-      // Never deduct money at the stale price.
-      if (
-        Math.abs(
-          authoritativePrice - requestedPrice
-        ) >= 0.01
-      ) {
-        const err = new Error(
-          "Server 1 price changed. Please refresh and try again."
-        );
-
-        err.code = "SERVER1_PRICE_CHANGED";
-        err.oldPrice = requestedPrice;
-        err.newPrice = authoritativePrice;
-
-        throw err;
-      }
+      authoritativePrice = requestedPrice;
     }
 
     const userSnap = await txn.get(userRef);
