@@ -51,7 +51,7 @@ registerProductsHandler(bot);
 registerSupportHandler(bot);
 registerReferralHandler(bot);
 registerAdminHandler(bot);
-registerServer1Handler(bot);
+const server1TextStepRegistry = registerServer1Handler(bot) || {};
 
 // These compatibility handlers intentionally register BEFORE the older
 // handlers so the corrected callbacks own their routes.
@@ -75,6 +75,7 @@ registerAdminStatsHandler(bot);
 
 const textSteps = Object.assign(
   {},
+  server1TextStepRegistry.textSteps || {},
   ...textStepRegistries.map((r) => r.textSteps)
 );
 
