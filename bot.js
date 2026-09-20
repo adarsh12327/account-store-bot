@@ -118,13 +118,49 @@ if (require.main === module) {
   // FamApp auto-verification is event-driven from the deposit flow.
   // No background Gmail/Firestore polling is started here.
 
-  bot.launch()
-    .then(() => console.log("[INFO] Telegram bot started in polling mode"))
-    .catch((err) => {
-      console.error("[ERROR] Failed to start Telegram bot:", err);
-      process.exit(1);
-    });
+  /**
+   * Launch bot with 409 Conflict retry logic.
+   * Retries only on Telegram error 409 (duplicate polling), with bounded
+   * exponential backoff: 5s, 10s, 20s, 30s (capped). Total window: ~65s.
+   * All other errors exit immediately.
+   */
+  async function launchWithRetry() {
+    const maxRetries = 4;
+    const backoffDelays = [5000, 10000, 20000, 30000]; // 5s, 10s, 20s, 30s (capped)
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        await bot.launch();
+        console.log("[INFO] Telegram bot started in polling mode");
+        return;
+      } catch (err) {
+        const is409 = err.code === 409 || (err.response && err.response.error_code === 409);
+
+        if (!is409) {
+          // Non-409 error: exit immediately
+          console.error("[ERROR] Failed to start Telegram bot:", err);
+          process.exit(1);
+        }
+
+        if (attempt < maxRetries) {
+          const delay = backoffDelays[attempt];
+          console.log(`[POLLING] 409 Conflict detected, retrying in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries})`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        } else {
+          // Exhausted retries after 409 errors
+          console.error("[ERROR] Failed to start Telegram bot after retries:", err);
+          process.exit(1);
+        }
+      }
+    }
+  }
+
+  launchWithRetry().catch((err) => {
+    console.error("[ERROR] Unexpected error in launchWithRetry:", err);
+    process.exit(1);
+  });
 
   process.once("SIGINT", () => bot.stop("SIGINT"));
   process.once("SIGTERM", () => bot.stop("SIGTERM"));
 }
+
