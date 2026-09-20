@@ -1763,6 +1763,33 @@ function invalidateServer1CatalogCache() {
 async function loadServer1Catalog(options = {}) {
   const forceRefresh = Boolean(options.forceRefresh);
 
+  // Always detect Admin pricing changes before returning any
+  // memory/JSON catalog. Settings are cached by the D1 adapter,
+  // so this remains fast and avoids provider API calls.
+  let pricingSettings = null;
+
+  try {
+    pricingSettings = await db.getSettings();
+
+    const pricingSignature =
+      getServer1PricingSignature(pricingSettings);
+
+    const pricingChanged =
+      server1PricingSignature &&
+      server1PricingSignature !== pricingSignature;
+
+    if (pricingChanged) {
+      invalidateServer1CatalogCache();
+    }
+
+    server1PricingSignature = pricingSignature;
+  } catch (err) {
+    logger.warn(
+      "Server 1 pricing settings check failed:",
+      err.message || err
+    );
+  }
+
   // ----------------------------------------------------------
   // ⚡ USER-FACING CATALOG
   // ----------------------------------------------------------
@@ -1819,7 +1846,7 @@ async function loadServer1Catalog(options = {}) {
   // Prices come directly from Firestore product documents.
   // ----------------------------------------------------------
 
-  const [products, countries, pricingSettings] = await Promise.all([
+  const [products, countries] = await Promise.all([
     db.listProducts({
       onlyEnabled: true,
     }),
@@ -1827,9 +1854,11 @@ async function loadServer1Catalog(options = {}) {
     db.listServer1Countries({
       onlyEnabled: true,
     }),
-
-    db.getSettings(),
   ]);
+
+  // pricingSettings was loaded above so the catalog uses the same
+  // settings snapshot that was used for cache invalidation.
+  pricingSettings = pricingSettings || await db.getSettings();
 
   server1PricingSignature =
     getServer1PricingSignature(pricingSettings);
@@ -1879,11 +1908,30 @@ async function loadServer1Catalog(options = {}) {
     const providerUsdPrice =
       Number(product.providerUsdPrice || 0);
 
-    const costInr =
+    // Recalculate the displayed price from the current Admin
+    // pricing settings. Do not keep the old products.finalPrice
+    // when global pricing is enabled.
+    let costInr =
       Number(product.costInr || 0);
 
-    const finalPrice =
+    let finalPrice =
       Number(product.finalPrice || 0);
+
+    if (
+      Number.isFinite(providerUsdPrice) &&
+      providerUsdPrice > 0
+    ) {
+      costInr =
+        providerUsdPrice * usdRate;
+
+      finalPrice =
+        Number(
+          (
+            costInr +
+            (costInr * marginPercent / 100)
+          ).toFixed(2)
+        );
+    }
 
     catalog.push({
       ...product,
