@@ -42,6 +42,7 @@ const path = require("path");
 
 const logger = require("../utils/logger");
 const db = require("../database");
+const session = require("../utils/session");
 
 const {
   getServer1CountrySalesStats,
@@ -3163,16 +3164,79 @@ function registerServer1Handler(bot) {
   bot.action(
     "server1:search",
     async (ctx) => {
+      try {
+        await answer(ctx);
 
-      await answer(ctx);
+        session.set(ctx.from.id, {
+          step: "server1_country_search",
+          data: {},
+        });
 
-      await ctx.reply(
-        `🔎 <b>Search Country</b>\n\n` +
-        `Search feature is ready to connect with the bot's text session.`,
-        {
-          parse_mode: "HTML",
+        await ctx.reply(
+          `🔎 <b>Search Country</b>\n\n` +
+          `Enter country name or country code.\n` +
+          `Example: <code>India</code>, <code>IN</code>, <code>nor</code>`,
+          {
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "❌ Cancel",
+                    callback_data: "server1:search:cancel",
+                  },
+                ],
+              ],
+            },
+          }
+        );
+      } catch (err) {
+        logger.error("Server 1 country search prompt failed", err);
+        await answer(ctx, "Search unavailable. Please try again.", true);
+      }
+    }
+  );
+
+  bot.action(
+    "server1:search:cancel",
+    async (ctx) => {
+      try {
+        await answer(ctx, "Cancelled");
+        session.clear(ctx.from.id);
+
+        const instant = getInstantServer1Catalog();
+
+        if (instant?.catalog?.length) {
+          await editScreen(
+            ctx,
+            `📱 <b>Server 1</b>\n\nSelect your country:`,
+            productListKeyboard(instant.catalog, 1)
+          );
+          return;
         }
-      );
+
+        await editScreen(
+          ctx,
+          `📱 <b>Server 1</b>\n\nLoading country list...`
+        );
+
+        setImmediate(async () => {
+          try {
+            const result = await loadServer1Catalog();
+            if (result?.catalog?.length) {
+              await editScreen(
+                ctx,
+                `📱 <b>Server 1</b>\n\nSelect your country:`,
+                productListKeyboard(result.catalog, 1)
+              );
+            }
+          } catch (err) {
+            logger.error("Server 1 search cancel reload failed", err);
+          }
+        });
+      } catch (err) {
+        logger.error("Server 1 search cancel failed", err);
+      }
     }
   );
 
@@ -4339,6 +4403,191 @@ function registerServer1Handler(bot) {
     }
   );
 
+  const textSteps = {
+    server1_country_search: async (ctx) => {
+      const rawQuery = String(ctx.message?.text || "").trim();
+      const query = rawQuery.toLowerCase();
+
+      if (!query) {
+        await ctx.reply(
+          "❌ Please enter a country name or country code.",
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "❌ Cancel",
+                    callback_data: "server1:search:cancel",
+                  },
+                ],
+              ],
+            },
+          }
+        );
+        return;
+      }
+
+      try {
+        // Use the already cached local catalog. Searching must never
+        // call Grizzly or perform a provider request.
+        let catalog = getInstantServer1Catalog()?.catalog || [];
+
+        if (!catalog.length) {
+          const result = await loadServer1Catalog();
+          catalog = Array.isArray(result?.catalog)
+            ? result.catalog
+            : [];
+        }
+
+        const normalized = query.replace(/^🌍\s*/u, "");
+
+        const results = catalog.filter((product) => {
+          const countryName = String(
+            product.countryName || product.name || ""
+          )
+            .replace(/^🌍\s*/u, "")
+            .replace(/^Telegram\s*/i, "")
+            .trim()
+            .toLowerCase();
+
+          const countryCode = String(
+            product.countryCode || ""
+          ).trim().toLowerCase();
+
+          return (
+            countryName.includes(normalized) ||
+            countryCode === normalized ||
+            countryCode.includes(normalized)
+          );
+        });
+
+        if (!results.length) {
+          await ctx.reply(
+            `❌ No country found for <b>${String(rawQuery)
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")}</b>.`,
+            {
+              parse_mode: "HTML",
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    {
+                      text: "🔎 Search Again",
+                      callback_data: "server1:search",
+                    },
+                  ],
+                  [
+                    {
+                      text: "⬅️ Product List",
+                      callback_data: "server1:menu",
+                    },
+                  ],
+                ],
+              },
+            }
+          );
+          return;
+        }
+
+        session.clear(ctx.from.id);
+
+        const unique = [];
+        const seen = new Set();
+
+        for (const product of results) {
+          const key = String(product.id);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          unique.push(product);
+          if (unique.length >= 20) break;
+        }
+
+        const rows = [];
+
+        for (let i = 0; i < unique.length; i += 2) {
+          const row = [];
+
+          for (let j = i; j < Math.min(i + 2, unique.length); j++) {
+            const product = unique[j];
+            const price = Number(
+              product.finalPrice || 0
+            ).toFixed(2);
+
+            const name = String(
+              product.countryName ||
+              product.name ||
+              "Unknown"
+            )
+              .replace(/^🌍\s*/u, "")
+              .replace(/^Telegram\s*/i, "")
+              .trim();
+
+            row.push({
+              text:
+                `${product.emoji || "🌍"} ${name} ₹${price}`,
+              callback_data:
+                `server1:product:${product.id}`,
+            });
+          }
+
+          rows.push(row);
+        }
+
+        rows.push([
+          {
+            text: "🔎 Search Again",
+            callback_data: "server1:search",
+          },
+        ]);
+
+        rows.push([
+          {
+            text: "⬅️ Product List",
+            callback_data: "server1:menu",
+          },
+          {
+            text: "🏠 Main Menu",
+            callback_data: "menu_home",
+          },
+        ]);
+
+        await ctx.reply(
+          `🔎 <b>Search Results</b>\n\nFound <b>${results.length}</b> matching country${results.length === 1 ? "" : "ies"}.`,
+          {
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: rows,
+            },
+          }
+        );
+      } catch (err) {
+        logger.error("Server 1 country search failed", err);
+
+        await ctx.reply(
+          "⚠️ Search failed temporarily. Please try again.",
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "🔎 Search Again",
+                    callback_data: "server1:search",
+                  },
+                  {
+                    text: "⬅️ Product List",
+                    callback_data: "server1:menu",
+                  },
+                ],
+              ],
+            },
+          }
+        );
+      }
+    },
+  };
+
+  return { textSteps };
 }
 
 module.exports = {
