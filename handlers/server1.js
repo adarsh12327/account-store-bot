@@ -3276,6 +3276,18 @@ function registerServer1Handler(bot) {
         const productId =
           ctx.match[1];
 
+        // Re-check Server 1 status before starting the live provider request.
+        // This also keeps pricing settings available to the Buy flow.
+        const server1Settings = await db.getSettings();
+        if (server1Settings.server1Enabled === false) {
+          await answer(
+            ctx,
+            "🔴 Server 1 is currently disabled.",
+            true
+          );
+          return;
+        }
+
         const {
           catalog,
         } =
