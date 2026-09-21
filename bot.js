@@ -7,6 +7,7 @@
  */
 require("dotenv").config();
 const { registerServer1Handler } = require("./handlers/server1");
+const { registerServer2Handler } = require("./handlers/server2");
 const { Telegraf } = require("telegraf");
 const config = require("./config");
 const logger = require("./utils/logger");
@@ -44,6 +45,7 @@ bot.use((ctx, next) => accessGuard(bot, ctx, next));
 
 // Register all handlers.
 registerStartHandler(bot);
+registerServer2Handler(bot);
 registerUserHandler(bot);
 registerWalletHandler(bot);
 registerOrdersHandler(bot);
