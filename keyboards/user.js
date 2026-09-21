@@ -3,7 +3,7 @@
  */
 const { Markup } = require("telegraf");
 function mainMenu(isAdmin = false) {
-  const buttons = [
+  const buttons = [\n    [\n      Markup.button.callback("🖥️ Server 2", "menu_server2")\n    ],
     [
       Markup.button.callback("📱 Buy Telegram Accounts", "menu_buy")
     ],
