@@ -3501,6 +3501,203 @@ async function cancelServer1OrderAndRefund(orderId, reason = "") {
   });
 }
 
+const SERVER2_COUNTRIES = "server2_countries";
+const SERVER2_STOCK = "server2_stock";
+const SERVER2_ORDERS = "server2_orders";
+
+async function createServer2Country({ name, emoji = "🌍" }) {
+  if (!String(name || "").trim()) throw new Error("COUNTRY_NAME_REQUIRED");
+  const ref = db.collection(SERVER2_COUNTRIES).doc();
+  const country = {
+    id: ref.id, name: String(name).trim(), emoji: String(emoji || "🌍"),
+    status: "enabled", createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  await ref.set(country);
+  return { ...country, createdAt: new Date(), updatedAt: new Date() };
+}
+async function getServer2Country(countryId) {
+  const snap = await db.collection(SERVER2_COUNTRIES).doc(String(countryId)).get();
+  return snap.exists ? { id: snap.id, ...snap.data() } : null;
+}
+async function listServer2Countries({ onlyEnabled = false } = {}) {
+  let ref = db.collection(SERVER2_COUNTRIES);
+  if (onlyEnabled) ref = ref.where("status", "==", "enabled");
+  const snap = await ref.get();
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+    .sort((a,b) => String(a.name).localeCompare(String(b.name)));
+}
+async function updateServer2Country(countryId, updates = {}) {
+  await db.collection(SERVER2_COUNTRIES).doc(String(countryId)).update({
+    ...updates, updatedAt: FieldValue.serverTimestamp()
+  });
+  return getServer2Country(countryId);
+}
+async function deleteServer2Country(countryId) {
+  await db.collection(SERVER2_COUNTRIES).doc(String(countryId)).delete();
+  return true;
+}
+
+async function createServer2Stock({ countryId, name, price, deliveryInfo = "" }) {
+  const numericPrice = Number(price);
+  if (!countryId) throw new Error("COUNTRY_ID_REQUIRED");
+  if (!String(name || "").trim()) throw new Error("STOCK_NAME_REQUIRED");
+  if (!Number.isFinite(numericPrice) || numericPrice <= 0) throw new Error("INVALID_PRICE");
+  const country = await getServer2Country(countryId);
+  if (!country) throw new Error("COUNTRY_NOT_FOUND");
+  const ref = db.collection(SERVER2_STOCK).doc();
+  const item = {
+    stockId: ref.id, countryId: String(countryId), countryName: country.name,
+    countryEmoji: country.emoji || "🌍", name: String(name).trim(),
+    price: numericPrice, deliveryInfo: String(deliveryInfo || "").trim(),
+    status: "available", createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  await ref.set(item);
+  return { ...item, createdAt: new Date(), updatedAt: new Date() };
+}
+async function getServer2Stock(stockId) {
+  const snap = await db.collection(SERVER2_STOCK).doc(String(stockId)).get();
+  return snap.exists ? { stockId: snap.id, ...snap.data() } : null;
+}
+async function listServer2Stock({ countryId, status } = {}) {
+  let ref = db.collection(SERVER2_STOCK);
+  if (countryId) ref = ref.where("countryId", "==", String(countryId));
+  if (status) ref = ref.where("status", "==", status);
+  const snap = await ref.get();
+  return snap.docs.map(d => ({ stockId: d.id, ...d.data() }))
+    .sort((a,b) => toMillis(b.createdAt) - toMillis(a.createdAt));
+}
+async function updateServer2Stock(stockId, updates = {}) {
+  if (updates.price !== undefined) {
+    const price = Number(updates.price);
+    if (!Number.isFinite(price) || price <= 0) throw new Error("INVALID_PRICE");
+    updates = { ...updates, price };
+  }
+  await db.collection(SERVER2_STOCK).doc(String(stockId)).update({
+    ...updates, updatedAt: FieldValue.serverTimestamp()
+  });
+  return getServer2Stock(stockId);
+}
+async function deleteServer2Stock(stockId) {
+  const item = await getServer2Stock(stockId);
+  if (!item) throw new Error("STOCK_NOT_FOUND");
+  if (item.status === "reserved") throw new Error("STOCK_RESERVED");
+  await db.collection(SERVER2_STOCK).doc(String(stockId)).delete();
+  return true;
+}
+
+async function createServer2Order(telegramId, stockId) {
+  const userId = String(telegramId);
+  const userRef = db.collection(USERS).doc(userId);
+  const stockRef = db.collection(SERVER2_STOCK).doc(String(stockId));
+  const orderRef = db.collection(SERVER2_ORDERS).doc();
+
+  return db.runTransaction(async txn => {
+    const [userSnap, stockSnap] = await Promise.all([txn.get(userRef), txn.get(stockRef)]);
+    if (!userSnap.exists) throw new Error("USER_NOT_FOUND");
+    if (!stockSnap.exists) throw new Error("STOCK_NOT_FOUND");
+    const user = userSnap.data();
+    const stock = stockSnap.data();
+    if (stock.status !== "available") { const e = new Error("Out of stock"); e.code = "OUT_OF_STOCK"; throw e; }
+    const price = Number(stock.price || 0);
+    if (Number(user.balance || 0) < price) { const e = new Error("Insufficient balance"); e.code = "INSUFFICIENT_BALANCE"; throw e; }
+    const newBalance = Number(user.balance || 0) - price;
+    txn.update(userRef, { balance: newBalance, totalOrders: Number(user.totalOrders || 0) + 1, updatedAt: FieldValue.serverTimestamp() });
+    txn.update(stockRef, { status: "reserved", reservedBy: userId, reservedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    const order = {
+      orderId: orderRef.id, userId, stockId: String(stockId),
+      countryId: stock.countryId || null, countryName: stock.countryName || "",
+      itemName: stock.name || "", amount: price, status: "pending",
+      deliveryInfo: "", createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(), processedBy: null,
+    };
+    txn.set(orderRef, order);
+    writeTransactionRecord(txn, {
+      userId, type: "order_purchase", amount: -price, balanceAfter: newBalance,
+      note: "Server 2 purchase: " + (stock.name || "Stock"), relatedId: orderRef.id,
+    });
+    return { ...order, newBalance };
+  });
+}
+async function getServer2Order(orderId) {
+  const snap = await db.collection(SERVER2_ORDERS).doc(String(orderId)).get();
+  return snap.exists ? { orderId: snap.id, ...snap.data() } : null;
+}
+async function listUserServer2Orders(telegramId, limit = 30) {
+  const snap = await db.collection(SERVER2_ORDERS).where("userId", "==", String(telegramId)).get();
+  return snap.docs.map(d => ({ orderId: d.id, ...d.data() }))
+    .sort((a,b) => toMillis(b.createdAt) - toMillis(a.createdAt)).slice(0, limit);
+}
+async function listServer2Orders({ status, limit = 50 } = {}) {
+  let ref = db.collection(SERVER2_ORDERS);
+  if (status) ref = ref.where("status", "==", status);
+  const snap = await ref.get();
+  return snap.docs.map(d => ({ orderId: d.id, ...d.data() }))
+    .sort((a,b) => toMillis(b.createdAt) - toMillis(a.createdAt)).slice(0, limit);
+}
+async function updateServer2Order(orderId, updates = {}) {
+  await db.collection(SERVER2_ORDERS).doc(String(orderId)).update({
+    ...updates, updatedAt: FieldValue.serverTimestamp()
+  });
+  return getServer2Order(orderId);
+}
+async function completeServer2Order(orderId, adminId, deliveryInfo) {
+  const orderRef = db.collection(SERVER2_ORDERS).doc(String(orderId));
+  return db.runTransaction(async txn => {
+    const snap = await txn.get(orderRef);
+    if (!snap.exists) throw new Error("ORDER_NOT_FOUND");
+    const order = snap.data();
+    if (!["pending","processing"].includes(order.status)) throw new Error("INVALID_STATE");
+    const stockRef = db.collection(SERVER2_STOCK).doc(String(order.stockId));
+    const stockSnap = await txn.get(stockRef);
+    if (!stockSnap.exists) throw new Error("STOCK_NOT_FOUND");
+    txn.update(orderRef, {
+      status: "completed", deliveryInfo: String(deliveryInfo || "").trim(),
+      processedBy: String(adminId), updatedAt: FieldValue.serverTimestamp()
+    });
+    txn.update(stockRef, { status: "sold", soldTo: order.userId, soldAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    return { ...order, orderId: String(orderId), status: "completed", deliveryInfo };
+  });
+}
+async function cancelServer2OrderAndRefund(orderId, adminId) {
+  const orderRef = db.collection(SERVER2_ORDERS).doc(String(orderId));
+  return db.runTransaction(async txn => {
+    const snap = await txn.get(orderRef);
+    if (!snap.exists) throw new Error("ORDER_NOT_FOUND");
+    const order = snap.data();
+    if (!["pending","processing"].includes(order.status)) throw new Error("INVALID_STATE");
+    const userRef = db.collection(USERS).doc(String(order.userId));
+    const userSnap = await txn.get(userRef);
+    if (!userSnap.exists) throw new Error("USER_NOT_FOUND");
+    const user = userSnap.data();
+    const refund = Number(order.amount || 0);
+    const newBalance = Number(user.balance || 0) + refund;
+    txn.update(userRef, { balance: newBalance, updatedAt: FieldValue.serverTimestamp() });
+    writeTransactionRecord(txn, {
+      userId: order.userId, type: "order_refund", amount: refund, balanceAfter: newBalance,
+      note: "Server 2 order cancelled", relatedId: String(orderId)
+    });
+    const stockRef = db.collection(SERVER2_STOCK).doc(String(order.stockId));
+    const stockSnap = await txn.get(stockRef);
+    if (stockSnap.exists) txn.update(stockRef, { status: "available", reservedBy: null, reservedAt: null, updatedAt: FieldValue.serverTimestamp() });
+    txn.update(orderRef, { status: "cancelled", processedBy: String(adminId), updatedAt: FieldValue.serverTimestamp() });
+    return { ...order, orderId: String(orderId), status: "cancelled", refundAmount: refund, newBalance };
+  });
+}
+async function getServer2Stats() {
+  const [stock, orders] = await Promise.all([listServer2Stock(), listServer2Orders({ limit: 500 })]);
+  return {
+    availableStock: stock.filter(x => x.status === "available").length,
+    totalOrders: orders.length,
+    pending: orders.filter(x => x.status === "pending").length,
+    processing: orders.filter(x => x.status === "processing").length,
+    completed: orders.filter(x => x.status === "completed").length,
+    cancelled: orders.filter(x => x.status === "cancelled").length,
+    sales: orders.filter(x => x.status === "completed").reduce((n,x) => n + Number(x.amount || 0), 0),
+  };
+}
+
 module.exports = {
   registerUserReferral,
   // users
@@ -3575,7 +3772,26 @@ module.exports = {
   updateSettings,
   // statistics
   getStatistics,
-    // Server 1 catalog
+    // Server 2 manual stock
+  createServer2Country,
+  getServer2Country,
+  listServer2Countries,
+  updateServer2Country,
+  deleteServer2Country,
+  createServer2Stock,
+  getServer2Stock,
+  listServer2Stock,
+  updateServer2Stock,
+  deleteServer2Stock,
+  createServer2Order,
+  getServer2Order,
+  listUserServer2Orders,
+  listServer2Orders,
+  updateServer2Order,
+  completeServer2Order,
+  cancelServer2OrderAndRefund,
+  getServer2Stats,
+  // Server 1 catalog
   createServer1Country,
   getServer1Country,
   listServer1Countries,
