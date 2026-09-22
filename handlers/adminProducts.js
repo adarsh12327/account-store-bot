@@ -670,10 +670,6 @@ function registerAdminProductsHandler(bot) {
                   text: "🖥️ Server 1",
                   callback_data: "admin:products:add:server:1",
                 },
-                {
-                  text: "🖥️ Server 2",
-                  callback_data: "admin:products:add:server:2",
-                },
               ],
               [
                 {
