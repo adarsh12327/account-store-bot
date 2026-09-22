@@ -10,11 +10,20 @@ const { Markup } = require("telegraf");
 function adminHome() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("📦 Products", "admin:products"), Markup.button.callback("👥 Users", "admin:users")],
+    [Markup.button.callback("🖥️ Servers", "admin:servers")],
     [Markup.button.callback("🌍 Countries", "admin:countries"), Markup.button.callback("🔌 Providers", "admin:providers")],
     [Markup.button.callback("💳 Deposits", "admin:deposits"), Markup.button.callback("🛒 Orders", "admin:orders")],
     [Markup.button.callback("📊 Statistics", "admin:stats"), Markup.button.callback("📢 Broadcast", "admin:broadcast")],
     [Markup.button.callback("⚙ Settings", "admin:settings")],
     [Markup.button.callback("🏠 Home", "menu_home")],
+  ]);
+}
+
+function serversMenu() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🖥️ Server 1", "admin:countries:server1")],
+    [Markup.button.callback("🖥️ Server 2", "s2:admin:home")],
+    [Markup.button.callback("⬅ Admin Home", "admin:home")],
   ]);
 }
 
@@ -30,7 +39,6 @@ function cancelKeyboard() {
 function countriesMenu() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("🖥️ Server 1", "admin:countries:server1")],
-    [Markup.button.callback("🖥️ Server 2", "admin:countries:server2")],
     [Markup.button.callback("⬅ Admin Home", "admin:home")],
   ]);
 }
@@ -244,6 +252,7 @@ function settingsMenu(settings = {}) {
 
 module.exports = {
   adminHome,
+  serversMenu,
   backToAdminHome,
   cancelKeyboard,
   countriesMenu,
