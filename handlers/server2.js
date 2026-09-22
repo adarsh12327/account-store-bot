@@ -7,7 +7,7 @@ const k=require("../keyboards/server2");
 function registerServer2Handler(bot){
  const admin=ctx=>requireAdmin(ctx);
  bot.action("admin:countries:server2",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;await c.editMessageText("🖥️ <b>Server 2 Countries</b>",{parse_mode:"HTML",...k.server2CountryMenu()});});
- bot.action("s2:admin:home",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;await c.editMessageText("🖥️ <b>Server 2</b>\n\nManual stock management",{parse_mode:"HTML",...k.server2Home()});});
+ bot.action("s2:admin:home",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;await c.editMessageText("👋 <b>Welcome to Server 2</b>\n\nThis is the Server 2 management panel.\n\n📦 Manual stock system is ready.",{parse_mode:"HTML",...k.server2Home()});});
  bot.action("s2:admin:countries",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;await c.editMessageText("🌍 <b>Server 2 Countries</b>",{parse_mode:"HTML",...k.server2CountryMenu()});});
  bot.action("s2:admin:countries:list",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;const a=await db.listServer2Countries();await c.editMessageText(`📋 <b>Countries</b> — ${a.length}`,{parse_mode:"HTML",...k.server2CountryList(a)});});
  bot.action("s2:admin:country:add",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;session.set(c.from.id,{step:"s2_country_add",data:{}});await c.reply("Format: <code>India | 🇮🇳</code>",{parse_mode:"HTML"});});
