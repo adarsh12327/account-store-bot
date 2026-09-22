@@ -10,7 +10,7 @@
 const db = require("../database");
 const logger = require("../utils/logger");
 const { isAdmin, escapeHtml } = require("../utils/helpers");
-const { adminHome } = require("../keyboards/admin");
+const { adminHome, serversMenu } = require("../keyboards/admin");
 const { showOrEdit } = require("../utils/navigation");
 /**
  * Call at the top of every admin handler. Returns true if the caller
@@ -63,6 +63,19 @@ if (ctx.callbackQuery) {
   }
 }
 function registerAdminHandler(bot) {
+  bot.action("admin:servers", async (ctx) => {
+    try {
+      await ctx.answerCbQuery();
+      if (!(await requireAdmin(ctx))) return;
+      await ctx.editMessageText(
+        "🖥️ <b>Servers</b>\n\nSelect a server:",
+        { parse_mode: "HTML", ...serversMenu() }
+      );
+    } catch (err) {
+      logger.error("Error in admin:servers action", err);
+    }
+  });
+
   bot.command("admin", async (ctx) => {
     try {
       if (!(await requireAdmin(ctx))) return;
