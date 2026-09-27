@@ -35,6 +35,7 @@ const { registerAdminOrdersHandler } = require("./handlers/adminOrders");
 const { registerAdminSettingsHandler } = require("./handlers/adminSettings");
 const { registerAdminBroadcastHandler } = require("./handlers/adminBroadcast");
 const { registerAdminStatsHandler } = require("./handlers/adminStats");
+const { startAutoBroadcast } = require("./services/autoBroadcast");
 
 const bot = new Telegraf(config.botToken);
 
@@ -156,6 +157,8 @@ if (require.main === module) {
       }
     }
   }
+
+  startAutoBroadcast(bot);
 
   launchWithRetry().catch((err) => {
     console.error("[ERROR] Unexpected error in launchWithRetry:", err);
