@@ -102,6 +102,26 @@ function getScheduledSlot(date = new Date()) {
   return null;
 }
 
+async function runBroadcastMessage(bot, message) {
+  const userIds = await db.listAllUserIds();
+  let sent = 0;
+  let failed = 0;
+  for (const userId of userIds) {
+    try {
+      await sendWithRetry(bot.telegram, userId, message);
+      sent++;
+    } catch (err) {
+      failed++;
+      logger.warn("Broadcast delivery failed", {
+        userId,
+        reason: err?.message || String(err),
+      });
+    }
+    await sleep(MIN_DELAY_MS);
+  }
+  return { users: userIds.length, sent, failed };
+}
+
 async function runAutoBroadcast(bot) {
   if (running) return;
 
@@ -153,8 +173,17 @@ async function runAutoBroadcast(bot) {
 function startAutoBroadcast(bot) {
   if (timer) return;
 
-  // Scheduled slots are fixed to India time: 08:00 and 17:00.
-  // The first slot after deployment is handled normally.
+  // One-time live test: send one promotional message immediately.
+  db.getSettings().then(async (settings) => {
+    if (settings.autoBroadcastTestSent === true) return;
+    const result = await runBroadcastMessage(bot, MESSAGE_1);
+    await db.updateSettings({ autoBroadcastTestSent: true });
+    logger.info("Auto broadcast live test completed", result);
+  }).catch((err) => {
+    logger.error("Auto broadcast live test failed", err);
+  });
+
+  // Scheduled slots are fixed to India time: 08:00 and 17:00 IST.
   runAutoBroadcast(bot).catch((err) => {
     logger.error("Auto broadcast startup check failed", err);
   });
