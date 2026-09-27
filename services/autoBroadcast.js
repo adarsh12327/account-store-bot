@@ -12,7 +12,8 @@ const db = require("../database");
 const logger = require("../utils/logger");
 
 const CHECK_INTERVAL_MS = 60 * 1000;
-const DEFAULT_INTERVAL_HOURS = 12;
+const MORNING_HOUR_IST = 8;
+const EVENING_HOUR_IST = 17;
 const MIN_DELAY_MS = 40;
 
 const MESSAGE_1 =
@@ -77,43 +78,48 @@ async function sendWithRetry(telegram, userId, text) {
   return false;
 }
 
+function getIndiaDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const out = {};
+  for (const p of parts) out[p.type] = p.value;
+  return {
+    dateKey: `${out.year}-${out.month}-${out.day}`,
+    hour: Number(out.hour),
+  };
+}
+
+function getScheduledSlot(date = new Date()) {
+  const { dateKey, hour } = getIndiaDateParts(date);
+  if (hour === MORNING_HOUR_IST) return `${dateKey}:08`;
+  if (hour === EVENING_HOUR_IST) return `${dateKey}:17`;
+  return null;
+}
+
 async function runAutoBroadcast(bot) {
   if (running) return;
 
   const settings = await db.getSettings();
-  const enabled = settings.autoBroadcastEnabled !== false;
-  if (!enabled) return;
+  if (settings.autoBroadcastEnabled === false) return;
 
-  const intervalHours = Number(
-    settings.autoBroadcastIntervalHours || DEFAULT_INTERVAL_HOURS
-  );
-  const intervalMs = Math.max(intervalHours, 1) * 60 * 60 * 1000;
-  const lastSentAt = toMillis(settings.autoBroadcastLastSentAt);
+  const slot = getScheduledSlot();
+  if (!slot) return;
 
-  // The scheduler is intentionally started with a fresh 12-hour timer.
-  // A null timestamp means: send the first campaign on the next scheduler check.
-  if (!lastSentAt) {
-    // Start from now and continue into the normal 12-hour cycle.
-    await db.updateSettings({
-      autoBroadcastLastSentAt: new Date().toISOString(),
-    });
-    return;
-  }
-
-  if (Date.now() - lastSentAt < intervalMs) return;
+  if (String(settings.autoBroadcastLastSentAt || "") === slot) return;
 
   running = true;
-
   try {
     const userIds = await db.listAllUserIds();
     let sent = 0;
     let failed = 0;
 
-    // Advance the schedule before sending so another tick cannot start
-    // a duplicate campaign while this one is running.
-    await db.updateSettings({
-      autoBroadcastLastSentAt: new Date().toISOString(),
-    });
+    await db.updateSettings({ autoBroadcastLastSentAt: slot });
 
     for (const userId of userIds) {
       try {
@@ -128,15 +134,14 @@ async function runAutoBroadcast(bot) {
           reason: err?.message || String(err),
         });
       }
-
       await sleep(MIN_DELAY_MS);
     }
 
     logger.info("Auto broadcast completed", {
+      slot,
       users: userIds.length,
       sent,
       failed,
-      intervalHours,
     });
   } catch (err) {
     logger.error("Auto broadcast failed", err);
@@ -148,13 +153,8 @@ async function runAutoBroadcast(bot) {
 function startAutoBroadcast(bot) {
   if (timer) return;
 
-  // Start a fresh schedule from this process start. This makes the
-  // first automatic campaign exactly 12 hours after deployment/startup.
-  db.updateSettings({ autoBroadcastLastSentAt: new Date().toISOString() }).catch((err) => {
-    logger.error("Auto broadcast timer initialization failed", err);
-  });
-
-  // Do not block bot startup.
+  // Scheduled slots are fixed to India time: 08:00 and 17:00.
+  // The first slot after deployment is handled normally.
   runAutoBroadcast(bot).catch((err) => {
     logger.error("Auto broadcast startup check failed", err);
   });
@@ -167,7 +167,7 @@ function startAutoBroadcast(bot) {
 
   if (typeof timer.unref === "function") timer.unref();
 
-  logger.info("Auto broadcast scheduler started");
+  logger.info("Auto broadcast scheduler started: 08:00 and 17:00 IST");
 }
 
 module.exports = {
