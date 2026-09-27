@@ -16,14 +16,14 @@ const DEFAULT_INTERVAL_HOURS = 12;
 const MIN_DELAY_MS = 40;
 
 const MESSAGE_1 =
-  "🚀 <b>KAP LOOTERS — BUY NOW</b>\n\n" +
-  "🔥 Fresh stock is waiting for you!\n" +
-  "💎 Fast • Simple • Trusted\n\n" +
+  "🚀 <b>TELEGRAM ACCOUNT STORE — BUY NOW</b>\\n\\n" +
+  "🔥 Fresh Telegram accounts are available!\\n" +
+  "💎 Fast • Simple • Trusted\\n\\n" +
   "🛒 <b>Ready to buy?</b>";
 
 const MESSAGE_2 =
-  "👉 <b>Open the store now</b>\n\n" +
-  "Send <code>/start</code> to open KAP LOOTERS and start shopping. 🛍️";
+  "👉 <b>Open Telegram Account Store</b>\\n\\n" +
+  "Send <code>/start</code> to open the store and start shopping. 🛍️";
 
 let timer = null;
 let running = false;
@@ -90,13 +90,13 @@ async function runAutoBroadcast(bot) {
   const intervalMs = Math.max(intervalHours, 1) * 60 * 60 * 1000;
   const lastSentAt = toMillis(settings.autoBroadcastLastSentAt);
 
-  // First startup only initializes the schedule. It does not blast users
-  // immediately after every deploy/restart.
+  // The scheduler is intentionally started with a fresh 12-hour timer.
+  // A null timestamp means: send the first campaign on the next scheduler check.
   if (!lastSentAt) {
+    // Start from now and continue into the normal 12-hour cycle.
     await db.updateSettings({
       autoBroadcastLastSentAt: new Date().toISOString(),
     });
-    logger.info("Auto broadcast schedule initialized");
     return;
   }
 
@@ -148,8 +148,13 @@ async function runAutoBroadcast(bot) {
 function startAutoBroadcast(bot) {
   if (timer) return;
 
-  // Do not block bot startup. The first check initializes the persistent
-  // 12-hour schedule, then subsequent checks only run when due.
+  // Start a fresh schedule from this process start. This makes the
+  // first automatic campaign exactly 12 hours after deployment/startup.
+  db.updateSettings({ autoBroadcastLastSentAt: new Date().toISOString() }).catch((err) => {
+    logger.error("Auto broadcast timer initialization failed", err);
+  });
+
+  // Do not block bot startup.
   runAutoBroadcast(bot).catch((err) => {
     logger.error("Auto broadcast startup check failed", err);
   });
