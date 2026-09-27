@@ -68,6 +68,9 @@ const DEFAULT_SETTINGS = {
   server1OtpWaitMinutes: 20,
   server1Enabled: true,
   server2Enabled: true,
+  autoBroadcastEnabled: true,
+  autoBroadcastIntervalHours: 12,
+  autoBroadcastLastSentAt: null,
 };
 
 // ==================================================================
