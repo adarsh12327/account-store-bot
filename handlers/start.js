@@ -360,6 +360,40 @@ function registerStartHandler(bot) {
   });
 
   // ==========================================================
+  // BROADCAST /START BUTTON
+  // ==========================================================
+
+  // Telegram does not allow a bot to send a message on the user's behalf.
+  // This button performs the same /start flow directly when tapped.
+  bot.action("broadcast:start", async (ctx) => {
+    try {
+      await ctx.answerCbQuery();
+
+      const telegramId = ctx.from.id;
+
+      const checkingMessage = await ctx.reply(
+        "🔄 <b>Checking your account...</b>\n\n" +
+        "⏳ <i>Please wait...</i>",
+        { parse_mode: "HTML" }
+      );
+
+      await runBackgroundStart(
+        bot,
+        ctx,
+        telegramId,
+        checkingMessage,
+        ""
+      );
+    } catch (err) {
+      logger.error("Error in broadcast:start action", err);
+      await ctx.answerCbQuery(
+        "⚠️ Something went wrong.",
+        { show_alert: true }
+      ).catch(() => {});
+    }
+  });
+
+  // ==========================================================
   // VERIFY JOIN
   // ==========================================================
 
