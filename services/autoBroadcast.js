@@ -17,14 +17,15 @@ const EVENING_HOUR_IST = 17;
 const MIN_DELAY_MS = 40;
 
 const MESSAGE_1 =
-  "🚀 <b>TELEGRAM ACCOUNT STORE — BUY NOW</b>\\n\\n" +
-  "🔥 Fresh Telegram accounts are available!\\n" +
-  "💎 Fast • Simple • Trusted\\n\\n" +
+  "🚀 <b>TELEGRAM ACCOUNT STORE — BUY NOW</b>\n\n" +
+  "🔥 Fresh Telegram accounts are available!\n" +
+  "💎 Fast • Simple • Trusted\n\n" +
   "🛒 <b>Ready to buy?</b>";
 
 const MESSAGE_2 =
-  "👉 <b>Open Telegram Account Store</b>\\n\\n" +
-  "Send <code>/start</code> to open the store and start shopping. 🛍️";
+  "👉 <b>Open Telegram Account Store</b>\n\n" +
+  "🚀 Open Store &amp; Shop 🛍️\n" +
+  "👉 Tap /start below to get started.";
 
 let timer = null;
 let running = false;
@@ -55,6 +56,11 @@ async function sendWithRetry(telegram, userId, text) {
       await telegram.sendMessage(userId, text, {
         parse_mode: "HTML",
         disable_web_page_preview: true,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🚀 /start — Open Store", callback_data: "broadcast:start" }],
+          ],
+        },
       });
       return true;
     } catch (err) {
