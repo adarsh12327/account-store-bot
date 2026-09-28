@@ -2,7 +2,7 @@
  * services/autoBroadcast.js
  * ---------------------------------------------------------------
  * Automatic promotional broadcast for registered bot users.
- * Sends two messages once every configured interval (default: 12h).
+ * Sends one promotional message per scheduled slot.
  * The last-run timestamp is persisted in settings so restarts do not
  * reset the schedule or cause an immediate duplicate broadcast.
  * ---------------------------------------------------------------
@@ -16,16 +16,13 @@ const MORNING_HOUR_IST = 8;
 const EVENING_HOUR_IST = 17;
 const MIN_DELAY_MS = 40;
 
-const MESSAGE_1 =
+const BROADCAST_MESSAGE =
   "🚀 <b>TELEGRAM ACCOUNT STORE — BUY NOW</b>\n\n" +
   "🔥 Fresh Telegram accounts are available!\n" +
   "💎 Fast • Simple • Trusted\n\n" +
-  "🛒 <b>Ready to buy?</b>";
-
-const MESSAGE_2 =
-  "👉 <b>Open Telegram Account Store</b>\n\n" +
+  "🛒 <b>Ready to buy?</b>\n" +
   "🚀 Open Store &amp; Shop 🛍️\n" +
-  "👉 Tap /start below to get started.";
+  "👉 Tap the button below to get started.";
 
 let timer = null;
 let running = false;
@@ -149,9 +146,7 @@ async function runAutoBroadcast(bot) {
 
     for (const userId of userIds) {
       try {
-        await sendWithRetry(bot.telegram, userId, MESSAGE_1);
-        await sleep(MIN_DELAY_MS);
-        await sendWithRetry(bot.telegram, userId, MESSAGE_2);
+        await sendWithRetry(bot.telegram, userId, BROADCAST_MESSAGE);
         sent++;
       } catch (err) {
         failed++;
@@ -182,7 +177,7 @@ function startAutoBroadcast(bot) {
   // One-time live test: send one promotional message immediately.
   db.getSettings().then(async (settings) => {
     if (settings.autoBroadcastTestSent === true) return;
-    const result = await runBroadcastMessage(bot, MESSAGE_1);
+    const result = await runBroadcastMessage(bot, BROADCAST_MESSAGE);
     await db.updateSettings({ autoBroadcastTestSent: true });
     logger.info("Auto broadcast live test completed", result);
   }).catch((err) => {
