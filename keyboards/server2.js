@@ -11,11 +11,7 @@ function server2Home() {
 }
 
 function server2CountryMenu() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback("➕ Add Country", "s2:admin:country:add")],
-    [Markup.button.callback("📋 Country List", "s2:admin:countries:list")],
-    [Markup.button.callback("⬅ Server 2", "s2:admin:home")],
-  ]);
+  return server2TopCountryMenu();
 }
 
 const SERVER2_TOP_COUNTRIES = [
@@ -55,7 +51,7 @@ function server2TopCountryMenu() {
     rows.push(row);
   }
   rows.push([Markup.button.callback("✍️ Manual Add Country", "s2:admin:country:manual")]);
-  rows.push([Markup.button.callback("⬅ Countries", "s2:admin:countries")]);
+  rows.push([Markup.button.callback("⬅ Server 2", "s2:admin:home")]);
   return Markup.inlineKeyboard(rows);
 }
 
