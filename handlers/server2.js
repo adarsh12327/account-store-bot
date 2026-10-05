@@ -8,8 +8,8 @@ function registerServer2Handler(bot){
  const admin=ctx=>requireAdmin(ctx);
  bot.action("admin:countries:server2",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;await c.editMessageText("🖥️ <b>Server 2 Countries</b>",{parse_mode:"HTML",...k.server2CountryMenu()});});
  bot.action("s2:admin:home",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;await c.editMessageText("👋 <b>Welcome to Server 2</b>\n\nThis is the Server 2 management panel.\n\n📦 Manual stock system is ready.",{parse_mode:"HTML",...k.server2Home()});});
- bot.action("s2:admin:countries",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;await c.editMessageText("🌍 <b>Server 2 Countries</b>",{parse_mode:"HTML",...k.server2CountryMenu()});});
- bot.action("s2:admin:countries:list",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;const a=await db.listServer2Countries();await c.editMessageText(`📋 <b>Countries</b> — ${a.length}`,{parse_mode:"HTML",...k.server2CountryList(a)});});
+ bot.action("s2:admin:countries",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;await db.ensureServer2TopCountries(k.SERVER2_TOP_COUNTRIES);await c.editMessageText("🌍 <b>Server 2 Countries</b>",{parse_mode:"HTML",...k.server2CountryMenu()});});
+ bot.action("s2:admin:countries:list",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;await db.ensureServer2TopCountries(k.SERVER2_TOP_COUNTRIES);const a=await db.listServer2Countries();await c.editMessageText(`📋 <b>Countries</b> — ${a.length}`,{parse_mode:"HTML",...k.server2CountryList(a)});});
 
  bot.action("s2:admin:country:add",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;await c.editMessageText("🌍 <b>Add Server 2 Country</b>\n\nTop 20 countries me se select karo, ya apna country manually add karo.",{parse_mode:"HTML",...k.server2TopCountryMenu()});});
  bot.action("s2:admin:country:manual",async c=>{await c.answerCbQuery();if(!(await admin(c)))return;session.set(c.from.id,{step:"s2_country_add",data:{}});await c.reply("✍️ <b>Manual Country Add</b>\n\nFormat: <code>India | 🇮🇳</code>\n\nExample: <code>Nepal | 🇳🇵</code>",{parse_mode:"HTML"});});
