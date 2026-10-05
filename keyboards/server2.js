@@ -76,7 +76,7 @@ function server2CountryDetail(c) {
   ]);
 }
 
-function server2StockMenu() {
+function server2StockCountrySelect(countries) {\n  const rows = [];\n  for (let i = 0; i < countries.length; i += 2) {\n    const row = [];\n    for (let j = i; j < Math.min(i + 2, countries.length); j++) {\n      const x = countries[j];\n      row.push(Markup.button.callback(`${x.emoji || "🌍"} ${x.name}`, `s2:admin:stock:country:${x.id}`));\n    }\n    rows.push(row);\n  }\n  rows.push([Markup.button.callback("⬅️ Server 2", "s2:admin:home")]);\n  return Markup.inlineKeyboard(rows);\n}\n\nfunction server2StockMenu() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("➕ Add Stock", "s2:admin:stock:add")],
     [Markup.button.callback("📋 Available Stock", "s2:admin:stock:list:available")],
