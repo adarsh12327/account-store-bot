@@ -48,7 +48,6 @@ bot.use((ctx, next) => accessGuard(bot, ctx, next));
 
 // Register all handlers.
 registerStartHandler(bot);
-registerServer2Handler(bot);
 registerUserHandler(bot);
 registerWalletHandler(bot);
 registerOrdersHandler(bot);
@@ -57,6 +56,7 @@ registerSupportHandler(bot);
 registerReferralHandler(bot);
 registerAdminHandler(bot);
 const server1TextStepRegistry = registerServer1Handler(bot) || {};
+const server2TextStepRegistry = registerServer2Handler(bot) || {};
 
 // These compatibility handlers intentionally register BEFORE the older
 // handlers so the corrected callbacks own their routes.
@@ -81,6 +81,7 @@ registerAdminStatsHandler(bot);
 const textSteps = Object.assign(
   {},
   server1TextStepRegistry.textSteps || {},
+  server2TextStepRegistry.textSteps || {},
   ...textStepRegistries.map((r) => r.textSteps)
 );
 
