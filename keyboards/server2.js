@@ -189,7 +189,7 @@ function server2UserOrders(orders) {
 }
 
 module.exports = {
-  server2Home, server2CountryMenu, server2TopCountryMenu, server2CountryList, server2CountryDetail,
+  SERVER2_TOP_COUNTRIES, server2Home, server2CountryMenu, server2TopCountryMenu, server2CountryList, server2CountryDetail,
   server2StockMenu, server2StockList, server2StockDetail,
   server2OrdersMenu, server2OrderList, server2OrderDetail,
   server2UserHome, server2UserCountries, server2UserStock, server2Confirm,
