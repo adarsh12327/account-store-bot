@@ -3508,6 +3508,21 @@ const SERVER2_COUNTRIES = "server2_countries";
 const SERVER2_STOCK = "server2_stock";
 const SERVER2_ORDERS = "server2_orders";
 
+async function ensureServer2TopCountries(countries = []) {
+  if (!Array.isArray(countries) || countries.length === 0) return { added: 0, total: 0 };
+  const existing = await listServer2Countries();
+  const names = new Set(existing.map(x => String(x.name || "").trim().toLowerCase()));
+  let added = 0;
+  for (const [emoji, name] of countries) {
+    const key = String(name || "").trim().toLowerCase();
+    if (!key || names.has(key)) continue;
+    await createServer2Country({ name, emoji });
+    names.add(key);
+    added++;
+  }
+  return { added, total: existing.length + added };
+}
+
 async function createServer2Country({ name, emoji = "🌍" }) {
   if (!String(name || "").trim()) throw new Error("COUNTRY_NAME_REQUIRED");
   const ref = db.collection(SERVER2_COUNTRIES).doc();
@@ -3777,6 +3792,7 @@ module.exports = {
   getStatistics,
     // Server 2 manual stock
   createServer2Country,
+  ensureServer2TopCountries,
   getServer2Country,
   listServer2Countries,
   updateServer2Country,
