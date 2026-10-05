@@ -36,6 +36,8 @@ const { registerAdminSettingsHandler } = require("./handlers/adminSettings");
 const { registerAdminBroadcastHandler } = require("./handlers/adminBroadcast");
 const { registerAdminStatsHandler } = require("./handlers/adminStats");
 const { startAutoBroadcast } = require("./services/autoBroadcast");
+const db = require("./database");
+const { SERVER2_TOP_COUNTRIES } = require("./keyboards/server2");
 
 const bot = new Telegraf(config.botToken);
 
@@ -157,6 +159,12 @@ if (require.main === module) {
       }
     }
   }
+
+  db.ensureServer2TopCountries(SERVER2_TOP_COUNTRIES).then((r) => {
+    console.log(`[INFO] Server 2 country catalog ready: +${r.added} added, ${r.total} total`);
+  }).catch((err) => {
+    console.error("[ERROR] Server 2 country catalog seed failed:", err);
+  });
 
   startAutoBroadcast(bot);
 
