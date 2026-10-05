@@ -18,6 +18,47 @@ function server2CountryMenu() {
   ]);
 }
 
+const SERVER2_TOP_COUNTRIES = [
+  ["🇮🇳", "India"],
+  ["🇺🇸", "United States"],
+  ["🇬🇧", "United Kingdom"],
+  ["🇨🇦", "Canada"],
+  ["🇦🇺", "Australia"],
+  ["🇦🇪", "United Arab Emirates"],
+  ["🇩🇪", "Germany"],
+  ["🇫🇷", "France"],
+  ["🇮🇩", "Indonesia"],
+  ["🇷🇺", "Russia"],
+  ["🇧🇷", "Brazil"],
+  ["🇹🇷", "Turkey"],
+  ["🇧🇩", "Bangladesh"],
+  ["🇵🇰", "Pakistan"],
+  ["🇸🇦", "Saudi Arabia"],
+  ["🇲🇾", "Malaysia"],
+  ["🇵🇭", "Philippines"],
+  ["🇻🇳", "Vietnam"],
+  ["🇹🇭", "Thailand"],
+  ["🇸🇬", "Singapore"],
+];
+
+function server2TopCountryMenu() {
+  const rows = [];
+  for (let i = 0; i < SERVER2_TOP_COUNTRIES.length; i += 2) {
+    const row = [];
+    for (let j = i; j < Math.min(i + 2, SERVER2_TOP_COUNTRIES.length); j++) {
+      const [emoji, name] = SERVER2_TOP_COUNTRIES[j];
+      row.push(Markup.button.callback(
+        `${emoji} ${name}`,
+        `s2:admin:country:preset:${j}`
+      ));
+    }
+    rows.push(row);
+  }
+  rows.push([Markup.button.callback("✍️ Manual Add Country", "s2:admin:country:manual")]);
+  rows.push([Markup.button.callback("⬅ Countries", "s2:admin:countries")]);
+  return Markup.inlineKeyboard(rows);
+}
+
 function server2CountryList(countries) {
   const rows = countries.map(c => [
     Markup.button.callback(
@@ -148,7 +189,7 @@ function server2UserOrders(orders) {
 }
 
 module.exports = {
-  server2Home, server2CountryMenu, server2CountryList, server2CountryDetail,
+  server2Home, server2CountryMenu, server2TopCountryMenu, server2CountryList, server2CountryDetail,
   server2StockMenu, server2StockList, server2StockDetail,
   server2OrdersMenu, server2OrderList, server2OrderDetail,
   server2UserHome, server2UserCountries, server2UserStock, server2Confirm,
