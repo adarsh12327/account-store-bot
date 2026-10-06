@@ -3507,6 +3507,7 @@ async function cancelServer1OrderAndRefund(orderId, reason = "") {
 const SERVER2_COUNTRIES = "server2_countries";
 const SERVER2_STOCK = "server2_stock";
 const SERVER2_ORDERS = "server2_orders";
+const SERVER2_STOCK_REQUESTS = "server2_stock_requests";
 
 async function ensureServer2TopCountries(countries = []) {
   if (!Array.isArray(countries) || countries.length === 0) return { added: 0, total: 0 };
@@ -3585,6 +3586,32 @@ async function listServer2Stock({ countryId, status } = {}) {
   const snap = await ref.get();
   return snap.docs.map(d => ({ stockId: d.id, ...d.data() }))
     .sort((a,b) => toMillis(b.createdAt) - toMillis(a.createdAt));
+}
+async function requestServer2Stock(userId, countryId) {
+  const uid=String(userId||"").trim(), cid=String(countryId||"").trim();
+  if(!uid||!cid) throw new Error("INVALID_STOCK_REQUEST");
+  const country=await getServer2Country(cid);
+  if(!country||country.status!=="enabled") throw new Error("COUNTRY_NOT_FOUND");
+  const snap=await db.collection(SERVER2_STOCK_REQUESTS).where("userId","==",uid).where("countryId","==",cid).where("status","==","pending").limit(1).get();
+  if(!snap.empty) return {created:false,request:{requestId:snap.docs[0].id,...snap.docs[0].data()},country};
+  const ref=db.collection(SERVER2_STOCK_REQUESTS).doc();
+  const request={requestId:ref.id,userId:uid,countryId:cid,countryName:country.name,countryEmoji:country.emoji||"🌍",status:"pending",createdAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()};
+  await ref.set(request);
+  return {created:true,request:{...request,createdAt:new Date(),updatedAt:new Date()},country};
+}
+async function listServer2StockRequests(countryId) {
+  let ref=db.collection(SERVER2_STOCK_REQUESTS).where("status","==","pending");
+  if(countryId) ref=ref.where("countryId","==",String(countryId));
+  const snap=await ref.get();
+  return snap.docs.map(d=>({requestId:d.id,...d.data()}));
+}
+async function completeServer2StockRequests(countryId) {
+  const requests=await listServer2StockRequests(countryId);
+  if(!requests.length) return [];
+  const batch=db.batch();
+  for(const r of requests) batch.update(db.collection(SERVER2_STOCK_REQUESTS).doc(String(r.requestId)),{status:"notified",notifiedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()});
+  await batch.commit();
+  return requests;
 }
 async function updateServer2Stock(stockId, updates = {}) {
   if (updates.price !== undefined) {
@@ -3831,6 +3858,9 @@ module.exports = {
   createServer2Stock,
   getServer2Stock,
   listServer2Stock,
+  requestServer2Stock,
+  listServer2StockRequests,
+  completeServer2StockRequests,
   updateServer2Stock,
   deleteServer2Stock,
   reserveServer2Stock,
