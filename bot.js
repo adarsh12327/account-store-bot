@@ -36,6 +36,7 @@ const { registerAdminSettingsHandler } = require("./handlers/adminSettings");
 const { registerAdminBroadcastHandler } = require("./handlers/adminBroadcast");
 const { registerAdminStatsHandler } = require("./handlers/adminStats");
 const { startAutoBroadcast } = require("./services/autoBroadcast");
+const { startFamAppWatcher } = require("./utils/famappWatcher");
 const db = require("./database");
 const { SERVER2_TOP_COUNTRIES } = require("./keyboards/server2");
 
@@ -168,6 +169,7 @@ if (require.main === module) {
   });
 
   startAutoBroadcast(bot);
+  startFamAppWatcher(bot);
 
   launchWithRetry().catch((err) => {
     console.error("[ERROR] Unexpected error in launchWithRetry:", err);
