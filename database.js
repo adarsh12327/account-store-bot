@@ -3605,6 +3605,35 @@ async function deleteServer2Stock(stockId) {
   return true;
 }
 
+async function reserveServer2Stock(telegramId, stockId) {
+  const userId = String(telegramId);
+  const stockRef = db.collection(SERVER2_STOCK).doc(String(stockId));
+  return db.runTransaction(async txn => {
+    const snap = await txn.get(stockRef);
+    if (!snap.exists) throw new Error("STOCK_NOT_FOUND");
+    const stock = snap.data();
+    const now = Date.now();
+    if (stock.status === "reserved") {
+      const reservedAt = toMillis(stock.reservedAt);
+      if (String(stock.reservedBy) === userId && reservedAt && now - reservedAt < 5 * 60 * 1000) {
+        return { ...stock, stockId: String(stockId), reservationActive: true };
+      }
+      if (reservedAt && now - reservedAt < 5 * 60 * 1000) {
+        const e = new Error("OUT_OF_STOCK"); e.code = "OUT_OF_STOCK"; throw e;
+      }
+    }
+    if (stock.status === "sold") {
+      const e = new Error("OUT_OF_STOCK"); e.code = "OUT_OF_STOCK"; throw e;
+    }
+    txn.update(stockRef, {
+      status: "reserved",
+      reservedBy: userId,
+      reservedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    return { ...stock, stockId: String(stockId), status: "reserved", reservedBy: userId };
+  });
+}
 async function createServer2Order(telegramId, stockId) {
   const userId = String(telegramId);
   const userRef = db.collection(USERS).doc(userId);
@@ -3622,16 +3651,19 @@ async function createServer2Order(telegramId, stockId) {
     const now = Date.now();
     if (stock.status === "reserved") {
       const reservedAt = toMillis(stock.reservedAt);
-      if (reservedAt && (now - reservedAt) < 5 * 60 * 1000) {
+      const active = reservedAt && (now - reservedAt) < 5 * 60 * 1000;
+      if (active && String(stock.reservedBy) !== userId) {
         const e = new Error("OUT_OF_STOCK"); e.code = "OUT_OF_STOCK"; throw e;
       }
-      txn.update(stockRef, {
-        status: "available",
-        reservedBy: null,
-        reservedAt: null,
-        updatedAt: FieldValue.serverTimestamp()
-      });
-      stock.status = "available";
+      if (!active) {
+        txn.update(stockRef, {
+          status: "available",
+          reservedBy: null,
+          reservedAt: null,
+          updatedAt: FieldValue.serverTimestamp()
+        });
+        stock.status = "available";
+      }
     }
     if (stock.status !== "available") { const e = new Error("Out of stock"); e.code = "OUT_OF_STOCK"; throw e; }
     const price = Number(stock.price || 0);
@@ -3801,6 +3833,7 @@ module.exports = {
   listServer2Stock,
   updateServer2Stock,
   deleteServer2Stock,
+  reserveServer2Stock,
   createServer2Order,
   getServer2Order,
   listUserServer2Orders,
