@@ -3617,6 +3617,22 @@ async function createServer2Order(telegramId, stockId) {
     if (!stockSnap.exists) throw new Error("STOCK_NOT_FOUND");
     const user = userSnap.data();
     const stock = stockSnap.data();
+    // A stock item is reserved for 5 minutes before purchase completes.
+    // Expired reservations are released atomically when another buyer tries.
+    const now = Date.now();
+    if (stock.status === "reserved") {
+      const reservedAt = toMillis(stock.reservedAt);
+      if (reservedAt && (now - reservedAt) < 5 * 60 * 1000) {
+        const e = new Error("OUT_OF_STOCK"); e.code = "OUT_OF_STOCK"; throw e;
+      }
+      txn.update(stockRef, {
+        status: "available",
+        reservedBy: null,
+        reservedAt: null,
+        updatedAt: FieldValue.serverTimestamp()
+      });
+      stock.status = "available";
+    }
     if (stock.status !== "available") { const e = new Error("Out of stock"); e.code = "OUT_OF_STOCK"; throw e; }
     const price = Number(stock.price || 0);
     if (Number(user.balance || 0) < price) { const e = new Error("Insufficient balance"); e.code = "INSUFFICIENT_BALANCE"; throw e; }
@@ -3626,6 +3642,8 @@ async function createServer2Order(telegramId, stockId) {
     txn.update(stockRef, {
       status: "sold",
       soldTo: userId,
+      reservedBy: null,
+      reservedAt: null,
       soldAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp()
     });
