@@ -122,8 +122,7 @@ function server2StockDetail(s) {
 
 function server2OrdersMenu() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("⏳ Pending", "s2:admin:orders:pending"), Markup.button.callback("⚙️ Processing", "s2:admin:orders:processing")],
-    [Markup.button.callback("✅ Completed", "s2:admin:orders:completed"), Markup.button.callback("❌ Cancelled", "s2:admin:orders:cancelled")],
+    [Markup.button.callback("✅ Completed", "s2:admin:orders:completed")],
     [Markup.button.callback("📋 All Orders", "s2:admin:orders:all")],
     [Markup.button.callback("⬅ Server 2", "s2:admin:home")],
   ]);
@@ -141,16 +140,9 @@ function server2OrderList(orders) {
 }
 
 function server2OrderDetail(o) {
-  const rows = [];
-  if (o.status === "pending") {
-    rows.push([Markup.button.callback("⚙️ Mark Processing", `s2:admin:order:processing:${o.orderId}`)]);
-  }
-  if (o.status === "processing") {
-    rows.push([Markup.button.callback("✅ Complete", `s2:admin:order:complete:${o.orderId}`)]);
-    rows.push([Markup.button.callback("❌ Cancel + Refund", `s2:admin:order:cancel:${o.orderId}`)]);
-  }
-  rows.push([Markup.button.callback("⬅ Orders", "s2:admin:orders")]);
-  return Markup.inlineKeyboard(rows);
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("⬅ Orders", "s2:admin:orders")]
+  ]);
 }
 
 function server2UserHome() {
