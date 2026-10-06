@@ -154,9 +154,20 @@ function server2UserHome() {
 }
 
 function server2UserCountries(countries) {
-  const rows = countries.map(c => [
-    Markup.button.callback(`${c.emoji || "🌍"} ${c.name}`, `s2:user:country:${c.id}`)
-  ]);
+  const rows = [];
+  for (let i = 0; i < countries.length; i += 2) {
+    const row = [];
+    for (let j = i; j < Math.min(i + 2, countries.length); j++) {
+      const c = countries[j];
+      row.push(
+        Markup.button.callback(
+          `${c.emoji || "🌍"} ${c.name}`,
+          `s2:user:country:${c.id}`
+        )
+      );
+    }
+    rows.push(row);
+  }
   rows.push([Markup.button.callback("⬅ Server 2", "s2:user:home")]);
   return Markup.inlineKeyboard(rows);
 }
