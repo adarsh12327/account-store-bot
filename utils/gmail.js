@@ -22,14 +22,39 @@ function loadCredentials() {
   return data.installed || data.web;
 }
 
+function parseTokenJson(raw) {
+  if (!raw) return null;
+
+  const value = String(raw).trim();
+  if (!value) return null;
+
+  // Railway env values are sometimes pasted with an extra pair of
+  // single/double quotes around the complete JSON document.
+  try {
+    return JSON.parse(value);
+  } catch (_) {}
+
+  if (
+    value.length >= 2 &&
+    ((value.startsWith("'") && value.endsWith("'")) ||
+      (value.startsWith("\"") && value.endsWith("\"")))
+  ) {
+    try {
+      return JSON.parse(value.slice(1, -1));
+    } catch (_) {}
+  }
+
+  throw new Error("GMAIL_TOKEN_JSON is not valid JSON. Re-copy the complete Gmail OAuth token JSON into Railway.");
+}
+
 function loadToken() {
   if (process.env.GMAIL_TOKEN_JSON) {
-    return JSON.parse(process.env.GMAIL_TOKEN_JSON);
+    return parseTokenJson(process.env.GMAIL_TOKEN_JSON);
   }
 
   if (!fs.existsSync(TOKEN_PATH)) return null;
 
-  return JSON.parse(fs.readFileSync(TOKEN_PATH, "utf8"));
+  return parseTokenJson(fs.readFileSync(TOKEN_PATH, "utf8"));
 }
 
 function isRailway() {
