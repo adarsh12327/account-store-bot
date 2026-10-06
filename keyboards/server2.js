@@ -159,17 +159,43 @@ function server2UserCountries(countries) {
     const row = [];
     for (let j = i; j < Math.min(i + 2, countries.length); j++) {
       const c = countries[j];
-      row.push(
-        Markup.button.callback(
-          `${c.emoji || "🌍"} ${c.name}`,
-          `s2:user:country:${c.id}`
-        )
-      );
+      row.push(Markup.button.callback(
+        `${c.emoji || "🌍"} ${c.name} — ${Number(c.stockCount || 0)} available`,
+        `s2:user:country:${c.id}`
+      ));
     }
     rows.push(row);
   }
-  rows.push([Markup.button.callback("⬅ Server 2", "s2:user:home")]);
+  rows.push([Markup.button.callback("🔔 Request Stock", "s2:user:request_stock")]);
+  rows.push([Markup.button.callback("📦 My Server 2 Orders", "s2:user:orders")]);
+  rows.push([Markup.button.callback("🏠 Main Menu", "menu_home")]);
   return Markup.inlineKeyboard(rows);
+}
+
+function server2UserRequestCountries(countries) {
+  const rows = [];
+  for (let i = 0; i < countries.length; i += 2) {
+    const row = [];
+    for (let j = i; j < Math.min(i + 2, countries.length); j++) {
+      const c = countries[j];
+      row.push(Markup.button.callback(
+        `${c.emoji || "🌍"} ${c.name}`,
+        `s2:user:request:${c.id}`
+      ));
+    }
+    rows.push(row);
+  }
+  rows.push([Markup.button.callback("⬅ Back", "s2:user:countries")]);
+  return Markup.inlineKeyboard(rows);
+}
+
+function server2UserNoStock(countryId = "") {
+  return Markup.inlineKeyboard([
+    ...(countryId ? [[Markup.button.callback("🔔 Request This Stock", `s2:user:request:${countryId}`)]] : []),
+    [Markup.button.callback("🔔 Request Stock", "s2:user:request_stock")],
+    [Markup.button.callback("📦 My Server 2 Orders", "s2:user:orders")],
+    [Markup.button.callback("🏠 Main Menu", "menu_home")],
+  ]);
 }
 
 function server2UserStock(items) {
@@ -205,6 +231,6 @@ module.exports = {
   SERVER2_TOP_COUNTRIES, server2Home, server2CountryMenu, server2TopCountryMenu, server2CountryList, server2CountryDetail,
   server2StockMenu, server2StockCountrySelect, server2StockList, server2StockDetail,
   server2OrdersMenu, server2OrderList, server2OrderDetail,
-  server2UserHome, server2UserCountries, server2UserStock, server2Confirm,
+  server2UserHome, server2UserCountries, server2UserRequestCountries, server2UserNoStock, server2UserStock, server2Confirm,
   server2UserOrders,
 };
