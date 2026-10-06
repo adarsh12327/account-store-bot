@@ -3622,12 +3622,18 @@ async function createServer2Order(telegramId, stockId) {
     if (Number(user.balance || 0) < price) { const e = new Error("Insufficient balance"); e.code = "INSUFFICIENT_BALANCE"; throw e; }
     const newBalance = Number(user.balance || 0) - price;
     txn.update(userRef, { balance: newBalance, totalOrders: Number(user.totalOrders || 0) + 1, updatedAt: FieldValue.serverTimestamp() });
-    txn.update(stockRef, { status: "reserved", reservedBy: userId, reservedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    // Server 2 is instant-delivery: purchase atomically marks the number sold.
+    txn.update(stockRef, {
+      status: "sold",
+      soldTo: userId,
+      soldAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
+    });
     const order = {
       orderId: orderRef.id, userId, stockId: String(stockId),
       countryId: stock.countryId || null, countryName: stock.countryName || "",
-      itemName: stock.name || "", amount: price, status: "pending",
-      deliveryInfo: "", createdAt: FieldValue.serverTimestamp(),
+      itemName: stock.name || "", amount: price, status: "completed",
+      deliveryInfo: stock.name || "", createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(), processedBy: null,
     };
     txn.set(orderRef, order);
@@ -3676,31 +3682,6 @@ async function completeServer2Order(orderId, adminId, deliveryInfo) {
     });
     txn.update(stockRef, { status: "sold", soldTo: order.userId, soldAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
     return { ...order, orderId: String(orderId), status: "completed", deliveryInfo };
-  });
-}
-async function cancelServer2OrderAndRefund(orderId, adminId) {
-  const orderRef = db.collection(SERVER2_ORDERS).doc(String(orderId));
-  return db.runTransaction(async txn => {
-    const snap = await txn.get(orderRef);
-    if (!snap.exists) throw new Error("ORDER_NOT_FOUND");
-    const order = snap.data();
-    if (!["pending","processing"].includes(order.status)) throw new Error("INVALID_STATE");
-    const userRef = db.collection(USERS).doc(String(order.userId));
-    const userSnap = await txn.get(userRef);
-    if (!userSnap.exists) throw new Error("USER_NOT_FOUND");
-    const user = userSnap.data();
-    const refund = Number(order.amount || 0);
-    const newBalance = Number(user.balance || 0) + refund;
-    txn.update(userRef, { balance: newBalance, updatedAt: FieldValue.serverTimestamp() });
-    writeTransactionRecord(txn, {
-      userId: order.userId, type: "order_refund", amount: refund, balanceAfter: newBalance,
-      note: "Server 2 order cancelled", relatedId: String(orderId)
-    });
-    const stockRef = db.collection(SERVER2_STOCK).doc(String(order.stockId));
-    const stockSnap = await txn.get(stockRef);
-    if (stockSnap.exists) txn.update(stockRef, { status: "available", reservedBy: null, reservedAt: null, updatedAt: FieldValue.serverTimestamp() });
-    txn.update(orderRef, { status: "cancelled", processedBy: String(adminId), updatedAt: FieldValue.serverTimestamp() });
-    return { ...order, orderId: String(orderId), status: "cancelled", refundAmount: refund, newBalance };
   });
 }
 async function getServer2Stats() {
@@ -3808,7 +3789,6 @@ module.exports = {
   listServer2Orders,
   updateServer2Order,
   completeServer2Order,
-  cancelServer2OrderAndRefund,
   getServer2Stats,
   // Server 1 catalog
   createServer1Country,
