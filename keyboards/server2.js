@@ -189,6 +189,13 @@ function server2UserRequestCountries(countries) {
   return Markup.inlineKeyboard(rows);
 }
 
+function server2UserStockShortcut(countryId) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🛒 Buy Now", `s2:user:country:${countryId}`)],
+    [Markup.button.callback("🌍 Browse Countries", "s2:user:countries")],
+  ]);
+}
+
 function server2UserNoStock(countryId = "") {
   return Markup.inlineKeyboard([
     ...(countryId ? [[Markup.button.callback("🔔 Request This Stock", `s2:user:request:${countryId}`)]] : []),
@@ -231,6 +238,6 @@ module.exports = {
   SERVER2_TOP_COUNTRIES, server2Home, server2CountryMenu, server2TopCountryMenu, server2CountryList, server2CountryDetail,
   server2StockMenu, server2StockCountrySelect, server2StockList, server2StockDetail,
   server2OrdersMenu, server2OrderList, server2OrderDetail,
-  server2UserHome, server2UserCountries, server2UserRequestCountries, server2UserNoStock, server2UserStock, server2Confirm,
+  server2UserHome, server2UserCountries, server2UserRequestCountries, server2UserNoStock, server2UserStockShortcut, server2UserStock, server2Confirm,
   server2UserOrders,
 };
