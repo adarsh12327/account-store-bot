@@ -379,7 +379,7 @@ async function checkFamAppPayments(bot) {
         q:
   "from:no-reply@famapp.in " +
   'subject:"You received" ' +
-  "newer_than:1h",
+  "newer_than:24h",
        maxResults: 20,
       });
 
