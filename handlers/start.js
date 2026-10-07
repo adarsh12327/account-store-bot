@@ -367,7 +367,7 @@ function registerStartHandler(bot) {
   // This button performs the same /start flow directly when tapped.
   bot.action("broadcast:start", async (ctx) => {
     try {
-      await ctx.answerCbQuery();
+      ctx.answerCbQuery().catch(() => {});
 
       const telegramId = ctx.from.id;
 
@@ -406,7 +406,7 @@ function registerStartHandler(bot) {
       const startPayload =
         String(ctx.startPayload || "").trim();
 
-      await ctx.answerCbQuery();
+      ctx.answerCbQuery().catch(() => {});
 
       const settings =
         await db.getSettings();
@@ -479,7 +479,7 @@ function registerStartHandler(bot) {
 
   bot.action("menu_sales", async (ctx) => {
     try {
-      await ctx.answerCbQuery().catch(() => {});
+      ctx.answerCbQuery().catch(() => {});
 
       const settings = await db.getSettings();
       const salesChannel = String(settings.salesChannel || "").trim();
@@ -533,7 +533,7 @@ function registerStartHandler(bot) {
   bot.action("menu_home", async (ctx) => {
 
     try {
-      await ctx.answerCbQuery();
+      ctx.answerCbQuery().catch(() => {});
 
       // Main Menu is pure UI navigation. Do not wait for Firestore.
       await showMainMenu(
