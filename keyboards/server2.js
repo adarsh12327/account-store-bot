@@ -148,7 +148,6 @@ function server2OrderDetail(o) {
 function server2UserHome() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("🌍 Browse Countries", "s2:user:countries")],
-    [Markup.button.callback("📦 My Server 2 Orders", "s2:user:orders")],
     [Markup.button.callback("🏠 Main Menu", "menu_home")],
   ]);
 }
@@ -167,7 +166,6 @@ function server2UserCountries(countries) {
     rows.push(row);
   }
   rows.push([Markup.button.callback("🔔 Request Stock", "s2:user:request_stock")]);
-  rows.push([Markup.button.callback("📦 My Server 2 Orders", "s2:user:orders")]);
   rows.push([Markup.button.callback("🏠 Main Menu", "menu_home")]);
   return Markup.inlineKeyboard(rows);
 }
@@ -200,7 +198,6 @@ function server2UserNoStock(countryId = "") {
   return Markup.inlineKeyboard([
     ...(countryId ? [[Markup.button.callback("🔔 Request This Stock", `s2:user:request:${countryId}`)]] : []),
     [Markup.button.callback("🔔 Request Stock", "s2:user:request_stock")],
-    [Markup.button.callback("📦 My Server 2 Orders", "s2:user:orders")],
     [Markup.button.callback("🏠 Main Menu", "menu_home")],
   ]);
 }
