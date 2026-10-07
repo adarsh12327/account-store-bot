@@ -58,7 +58,30 @@ function normalizeServer1Order(order) {
     productName: `Telegram — ${order.countryName || "Unknown"}`,
     amount: Number(order.amount || 0),
     status: String(order.status || "unknown"),
+    orderSource: "server1",
   };
+}
+
+function normalizeServer2Order(order) {
+  return {
+    ...order,
+    orderId: String(order.orderId),
+    productName: `🖥️ Server 2 — ${order.itemName || order.countryName || "Number"}`,
+    amount: Number(order.amount || 0),
+    status: String(order.status || "unknown"),
+    orderSource: "server2",
+  };
+}
+
+function buildServer2OrderDetail(order) {
+  return (
+    `🖥️ <b>Server 2 Order Details</b>\n\n` +
+    `🌍 Country: <b>${escapeHtml(order.countryName || "Unknown")}</b>\n` +
+    `🔢 Number: <code>${escapeHtml(order.deliveryInfo || order.itemName || "Not assigned")}</code>\n` +
+    `💰 Amount: ₹${formatAmount(order.amount)}\n` +
+    `📌 Status: <b>${escapeHtml(order.status || "unknown")}</b>\n` +
+    `🕒 Placed: ${formatDate(order.createdAt)}`
+  );
 }
 
 function buildServer1OrderDetail(order) {
@@ -106,13 +129,15 @@ function registerOrdersHandler(bot) {
         try {
           const userId = String(ctx.from.id);
 
-          const [legacyOrders, server1OrdersRaw] = await Promise.all([
+          const [legacyOrders, server1OrdersRaw, server2OrdersRaw] = await Promise.all([
             db.listUserOrders(userId, 10),
             db.listUserServer1Orders(userId, 10, 0),
+            db.listUserServer2Orders(userId, 30),
           ]);
 
           const server1Orders = server1OrdersRaw.map(normalizeServer1Order);
-          const orders = [...legacyOrders, ...server1Orders]
+          const server2Orders = server2OrdersRaw.map(normalizeServer2Order);
+          const orders = [...legacyOrders, ...server1Orders, ...server2Orders]
             .sort((a, b) => orderTime(b) - orderTime(a))
             .slice(0, 10);
 
@@ -215,9 +240,33 @@ function registerOrdersHandler(bot) {
         return;
       }
 
+      if (server1Order && String(server1Order.userId) === userId) {
+        await editScreen(
+          ctx,
+          buildServer1OrderDetail(server1Order),
+          backToMenu()
+        );
+        return;
+      }
+
+      // Server 2 orders are included in the same My Orders history.
+      const server2Order = await db.getServer2Order(orderId);
+
+      if (
+        !server2Order ||
+        String(server2Order.userId) !== userId
+      ) {
+        await editScreen(
+          ctx,
+          "❌ <b>Order Not Found</b>\n\nThis order does not exist or does not belong to you.",
+          backToMenu()
+        );
+        return;
+      }
+
       await editScreen(
         ctx,
-        buildServer1OrderDetail(server1Order),
+        buildServer2OrderDetail(server2Order),
         backToMenu()
       );
 
