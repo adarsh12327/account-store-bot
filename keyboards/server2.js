@@ -1,12 +1,30 @@
 const { Markup } = require("telegraf");
 
-function server2Home() {
+function server2Home(authenticated = false) {
   return Markup.inlineKeyboard([
     [Markup.button.callback("🌍 Countries", "s2:admin:countries")],
     [Markup.button.callback("📦 Stock", "s2:admin:stock")],
     [Markup.button.callback("🛒 Orders", "s2:admin:orders")],
     [Markup.button.callback("📊 Statistics", "s2:admin:stats")],
+    authenticated
+      ? [Markup.button.callback("🔒 Logout Server 2", "s2:admin:logout")]
+      : [Markup.button.callback("🔐 Login to Server 2", "s2:admin:login")],
     [Markup.button.callback("⬅ Admin Home", "admin:home")],
+  ]);
+}
+
+function server2Login() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🔐 Start Login", "s2:admin:login")],
+    [Markup.button.callback("⬅ Admin Home", "admin:home")],
+  ]);
+}
+
+function server2StockReview(data) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("✅ Confirm & Add Stock", "s2:admin:stock:confirm")],
+    [Markup.button.callback("✏️ Start Over", "s2:admin:stock:add")],
+    [Markup.button.callback("⬅ Stock", "s2:admin:stock")],
   ]);
 }
 
