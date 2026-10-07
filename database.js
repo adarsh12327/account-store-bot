@@ -190,14 +190,6 @@ async function createUser(telegramId, data = {}) {
   }
 
   const userId = String(telegramId);
-  const cached = userReadCache.get(userId);
-
-  // Fast path: repeated /start calls for an already-known user should not
-  // make another D1 round-trip. The cache is refreshed by updateUser().
-  if (cached && Date.now() - cached.at < USER_CACHE_TTL_MS && cached.user) {
-    return { ...cached.user, _isNewUser: false };
-  }
-
   const userRef = db.collection(USERS).doc(userId);
 
   const existing = await userRef.get();
