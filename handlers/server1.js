@@ -1211,10 +1211,16 @@ async function editScreen(ctx, text, keyboard = null) {
   }
 }
 
-async function answer(ctx, text = "") {
-  try {
-    await ctx.answerCbQuery(text);
-  } catch (_) {}
+function answer(ctx, text = "") {
+  // Empty acknowledgements are only UI housekeeping. Start them without
+  // blocking the actual Server 1 navigation/render work. Alerts/messages
+  // still await Telegram so their ordering and behavior stay unchanged.
+  if (!text) {
+    ctx.answerCbQuery().catch(() => {});
+    return;
+  }
+
+  return ctx.answerCbQuery(text).catch(() => {});
 }
 
 // ------------------------------------------------------------
