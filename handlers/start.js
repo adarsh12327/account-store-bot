@@ -53,7 +53,7 @@ async function showMainMenu(ctx, user = null, edit = false) {
     .replace(/^@/, "")
     .trim();
 
-  const referralRate = 10;
+  const referralRate = getReferralRate(user, db.getSettingsSnapshot());
 
   const referralLink =
     `https://t.me/${botUsername}?start=${encodeURIComponent(String(ctx.from.id))}`;
@@ -245,7 +245,7 @@ async function runBackgroundStart(
     }
 
     // Only after every start-time check succeeds do we show Home.
-    const homeText = showMainMenuText(ctx);
+    const homeText = showMainMenuText(ctx, user, settings);
     const keyboard = mainMenu(isAdmin(telegramId));
 
     await ctx.telegram.editMessageText(
@@ -278,7 +278,30 @@ async function runBackgroundStart(
 /**
  * Build the home-screen text without any database/network read.
  */
-function showMainMenuText(ctx) {
+function getReferralRate(user, settings) {
+  const override = user?.referralRateOverride;
+  if (
+    override !== null &&
+    override !== undefined &&
+    override !== "" &&
+    Number.isFinite(Number(override)) &&
+    Number(override) >= 0 &&
+    Number(override) <= 100
+  ) {
+    return Number(Number(override).toFixed(2));
+  }
+
+  const configuredRate = Number(settings?.referralPercent ?? 10);
+  if (!Number.isFinite(configuredRate) || configuredRate < 0 || configuredRate > 100) {
+    return 10;
+  }
+  return Number(configuredRate.toFixed(2));
+}
+
+/**
+ * Build the home-screen text without any additional database/network read.
+ */
+function showMainMenuText(ctx, user = null, settings = db.getSettingsSnapshot()) {
   const firstName = ctx.from?.first_name || "there";
 
   const botUsername = String(
@@ -290,10 +313,12 @@ function showMainMenuText(ctx) {
   const referralLink =
     `https://t.me/${botUsername}?start=${encodeURIComponent(String(ctx.from.id))}`;
 
+  const referralRate = getReferralRate(user, settings);
+
   return (
     `<b>Welcome back, ${escapeHtml(firstName)} 👋</b>\n\n` +
     `👥 <b>Refer &amp; Earn</b>\n` +
-    `🎁 Earn <b>10%</b> commission on every referred user's deposit.\n\n` +
+    `🎁 Earn <b>${referralRate}%</b> commission on every referred user's deposit.\n\n` +
     `🔗 <b>Your Referral Link:</b>\n` +
     `<a href="${referralLink}">${escapeHtml(referralLink)}</a>`
   );
