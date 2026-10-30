@@ -20,7 +20,7 @@ async function digestHex(algorithm, keyBytes, value) {
 async function claimGlobalPayment(body, env) {
   const botId=String(body?.bot_id||"").trim(), depositId=String(body?.deposit_id||"").trim(), userId=String(body?.user_id||"").trim();
   const amountMinor=Number(body?.amount_minor), identifiers=Array.isArray(body?.identifiers)?body.identifiers:[];
-  if (!["KAP_SMS","ACCOUNT_STORE"].includes(botId)||!depositId||!userId||!Number.isSafeInteger(amountMinor)||amountMinor<=0||identifiers.length<1||identifiers.length>10)
+  if(!["KAP_SMS","ACCOUNT_STORE"].includes(botId)||!depositId||!userId||!Number.isSafeInteger(amountMinor)||amountMinor<=0||identifiers.length<1||identifiers.length>10)
     return json({ok:false,reason:"INVALID_PAYMENT"},400);
   const secret=String(env.GLOBAL_PAYMENT_SECRET||"");
   if(!secret)return json({ok:false,reason:"GLOBAL_PAYMENT_NOT_CONFIGURED"},503);
@@ -31,29 +31,63 @@ async function claimGlobalPayment(body, env) {
     const hash=await digestHex("HMAC",new TextEncoder().encode(secret),value);
     if(!normalized.some(x=>x.hash===hash))normalized.push({hash,type});
   }
-  const oldRows=await env.DB.prepare("SELECT identifier_hash FROM global_payment_identifiers WHERE payment_key=?").bind(paymentKey).all();
-  const oldHashes=new Set((oldRows.results||[]).map(x=>x.identifier_hash));
   const now=Date.now();
-  await env.DB.batch([
-    env.DB.prepare("INSERT OR IGNORE INTO global_payment_records(payment_key,bot_id,deposit_id,user_id,amount_minor,status,created_at,updated_at) VALUES(?,?,?,?,?,'RESERVED',?,?)").bind(paymentKey,botId,depositId,userId,amountMinor,now,now),
-    ...normalized.map(x=>env.DB.prepare("INSERT OR IGNORE INTO global_payment_identifiers(identifier_hash,payment_key,identifier_type,created_at) VALUES(?,?,?,?)").bind(x.hash,paymentKey,x.type,now))
-  ]);
   const record=await env.DB.prepare("SELECT bot_id,deposit_id,user_id,amount_minor,status FROM global_payment_records WHERE payment_key=?").bind(paymentKey).first();
-  if(!record||record.bot_id!==botId||record.deposit_id!==depositId||record.user_id!==userId||Number(record.amount_minor)!==amountMinor)
-    return json({ok:false,reason:"PAYMENT_KEY_CONFLICT"},409);
-  if(record.status==="REJECTED")return json({ok:false,reason:"PAYMENT_REJECTED"},409);
-  const marks=normalized.map(()=>"?").join(",");
-  const rows=await env.DB.prepare("SELECT identifier_hash,payment_key FROM global_payment_identifiers WHERE identifier_hash IN ("+marks+")").bind(...normalized.map(x=>x.hash)).all();
-  if((rows.results||[]).some(x=>x.payment_key!==paymentKey)){
-    const newHashes=normalized.map(x=>x.hash).filter(h=>!oldHashes.has(h));
-    if(newHashes.length){
-      const deleteMarks=newHashes.map(()=>"?").join(",");
-      await env.DB.prepare("DELETE FROM global_payment_identifiers WHERE payment_key=? AND identifier_hash IN ("+deleteMarks+")").bind(paymentKey,...newHashes).run();
+  if(record){
+    if(record.bot_id!==botId||record.deposit_id!==depositId||record.user_id!==userId||Number(record.amount_minor)!==amountMinor)
+      return json({ok:false,reason:"PAYMENT_KEY_CONFLICT"},409);
+    if(record.status==="REJECTED")return json({ok:false,reason:"PAYMENT_REJECTED"},409);
+    const marks=normalized.map(()=>"?").join(",");
+    const rows=await env.DB.prepare("SELECT identifier_hash,payment_key FROM global_payment_identifiers WHERE identifier_hash IN ("+marks+")").bind(...normalized.map(x=>x.hash)).all();
+    if((rows.results||[]).some(x=>x.payment_key!==paymentKey))return json({ok:false,reason:"DUPLICATE_PAYMENT"},409);
+    const owned=new Set((rows.results||[]).map(x=>x.identifier_hash));
+    const missing=normalized.filter(x=>!owned.has(x.hash));
+    if(missing.length){
+      try{
+        await env.DB.batch(missing.map(x=>env.DB.prepare("INSERT INTO global_payment_identifiers(identifier_hash,payment_key,identifier_type,created_at) VALUES(?,?,?,?)").bind(x.hash,paymentKey,x.type,now)));
+      }catch(error){
+        const latest=await env.DB.prepare("SELECT identifier_hash,payment_key FROM global_payment_identifiers WHERE identifier_hash IN ("+marks+")").bind(...normalized.map(x=>x.hash)).all();
+        if((latest.results||[]).some(x=>x.payment_key!==paymentKey))return json({ok:false,reason:"DUPLICATE_PAYMENT"},409);
+        throw error;
+      }
     }
-    await env.DB.prepare("UPDATE global_payment_records SET status='REJECTED',updated_at=? WHERE payment_key=? AND status='RESERVED'").bind(Date.now(),paymentKey).run();
-    return json({ok:false,reason:"DUPLICATE_PAYMENT"},409);
+    return json({ok:true,claimed:true,status:record.status,payment_key:paymentKey});
   }
-  return json({ok:true,claimed:true,status:record.status,payment_key:paymentKey});
+  try{
+    // D1 batch is transactional: a uniqueness conflict rolls back the record
+    // and every alias, so competing claims cannot leave partial reservations.
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO global_payment_records(payment_key,bot_id,deposit_id,user_id,amount_minor,status,created_at,updated_at) VALUES(?,?,?,?,?,'RESERVED',?,?)").bind(paymentKey,botId,depositId,userId,amountMinor,now,now),
+      ...normalized.map(x=>env.DB.prepare("INSERT INTO global_payment_identifiers(identifier_hash,payment_key,identifier_type,created_at) VALUES(?,?,?,?)").bind(x.hash,paymentKey,x.type,now))
+    ]);
+    return json({ok:true,claimed:true,status:"RESERVED",payment_key:paymentKey});
+  }catch(error){
+    // Resolve uniqueness races by checking both the deterministic record key
+    // and every requested alias. No writes are accepted on an ambiguous race.
+    const [existing,rows]=await Promise.all([
+      env.DB.prepare("SELECT bot_id,deposit_id,user_id,amount_minor,status FROM global_payment_records WHERE payment_key=?").bind(paymentKey).first(),
+      env.DB.prepare("SELECT identifier_hash,payment_key FROM global_payment_identifiers WHERE identifier_hash IN ("+normalized.map(()=>"?").join(",")+")").bind(...normalized.map(x=>x.hash)).all()
+    ]);
+    if((rows.results||[]).some(x=>x.payment_key!==paymentKey))return json({ok:false,reason:"DUPLICATE_PAYMENT"},409);
+    if(existing){
+      if(existing.bot_id!==botId||existing.deposit_id!==depositId||existing.user_id!==userId||Number(existing.amount_minor)!==amountMinor)
+        return json({ok:false,reason:"PAYMENT_KEY_CONFLICT"},409);
+      if(existing.status==="REJECTED")return json({ok:false,reason:"PAYMENT_REJECTED"},409);
+      const owned=new Set((rows.results||[]).filter(x=>x.payment_key===paymentKey).map(x=>x.identifier_hash));
+      const missing=normalized.filter(x=>!owned.has(x.hash));
+      if(missing.length){
+        try{
+          await env.DB.batch(missing.map(x=>env.DB.prepare("INSERT INTO global_payment_identifiers(identifier_hash,payment_key,identifier_type,created_at) VALUES(?,?,?,?)").bind(x.hash,paymentKey,x.type,now)));
+        }catch(retryError){
+          const latest=await env.DB.prepare("SELECT identifier_hash,payment_key FROM global_payment_identifiers WHERE identifier_hash IN ("+normalized.map(()=>"?").join(",")+")").bind(...normalized.map(x=>x.hash)).all();
+          if((latest.results||[]).some(x=>x.payment_key!==paymentKey))return json({ok:false,reason:"DUPLICATE_PAYMENT"},409);
+          throw retryError;
+        }
+      }
+      return json({ok:true,claimed:true,status:existing.status,payment_key:paymentKey});
+    }
+    throw error;
+  }
 }
 async function abortGlobalPayment(body,env){
   const key=String(body?.payment_key||"").trim();
