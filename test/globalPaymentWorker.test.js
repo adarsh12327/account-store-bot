@@ -31,7 +31,11 @@ function makeDb() {
         }
         if (sql.startsWith("DELETE FROM global_payment_identifiers")) {
           const [key, ...hashes] = params;
-          for (const hash of hashes) if (aliases.get(hash)?.payment_key === key) aliases.delete(hash);
+          if (sql.includes("IN (SELECT payment_key FROM global_payment_records")) {
+            for (const [hash,row] of aliases) if (row.payment_key === key) aliases.delete(hash);
+          } else {
+            for (const hash of hashes) if (aliases.get(hash)?.payment_key === key) aliases.delete(hash);
+          }
           return { meta:{changes:1} };
         }
         if (sql.startsWith("UPDATE global_payment_records SET status='REJECTED'")) {
