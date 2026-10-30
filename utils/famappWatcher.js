@@ -141,10 +141,10 @@ async function processMessage(gmail, messageId, bot) {
     return "no_timestamp";
   }
 
-  // Temporary test lookback: inspect FamApp emails up to 78 hours old.
-  const lookbackStart = Date.now() - 78 * 60 * 60 * 1000;
+  // FamApp lookback: inspect FamApp emails up to 1 hour old.
+  const lookbackStart = Date.now() - 1 * 60 * 60 * 1000;
   if (gmailTimestamp < lookbackStart) {
-    return "outside_78_hour_window";
+    return "outside_1_hour_window";
   }
 
   const headers =
@@ -396,7 +396,7 @@ async function checkFamAppPayments(bot) {
         q:
   "from:no-reply@famapp.in " +
   'subject:"You received" ' +
-  "newer_than:4d",
+  "newer_than:1h",
        maxResults: 20,
       });
 
