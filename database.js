@@ -852,7 +852,9 @@ async function approveDeposit(depositId, adminId, paymentIdentifiers = []) {
     ]
   });
 
-  const result = await db.runTransaction(async (txn) => {
+  let result;
+  try {
+    result = await db.runTransaction(async (txn) => {
     // ----------------------------------------------------------
     // READ PHASE — all reads happen before any writes
     // ----------------------------------------------------------
@@ -1042,7 +1044,23 @@ async function approveDeposit(depositId, adminId, paymentIdentifiers = []) {
       referralRate,
       referralReferrerId: referrerId,
     };
-  });
+    });
+  } catch (localError) {
+    // Resolve ambiguous Firestore outcomes before releasing the global reservation.
+    // If the deposit is already approved, preserve the lock and finish its commit.
+    const latestSnap = await depositRef.get();
+    if (!latestSnap.exists) {
+      await abortGlobalPayment(globalClaim.paymentKey);
+      throw localError;
+    }
+    const latestDeposit = latestSnap.data() || {};
+    if (latestDeposit.status === "approved") {
+      await commitGlobalPayment(globalClaim.paymentKey);
+    } else {
+      await abortGlobalPayment(globalClaim.paymentKey);
+    }
+    throw localError;
+  }
 
   // Commit the global payment reservation only after the local wallet transaction succeeds.
   await commitGlobalPayment(globalClaim.paymentKey);
