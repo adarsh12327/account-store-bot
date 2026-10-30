@@ -814,6 +814,28 @@ async function approveDeposit(depositId, adminId, paymentIdentifiers = []) {
   const preflightSnap = await depositRef.get();
   if (!preflightSnap.exists) throw new Error("Deposit not found");
   const preflightDeposit = preflightSnap.data() || {};
+  // A previous attempt can finish the Firestore wallet transaction but
+  // lose the network response while committing the shared lock. Re-claim
+  // the same deterministic payment key and finish that commit idempotently.
+  if (preflightDeposit.status === "approved") {
+    const recoveredClaim = await claimGlobalPayment({
+      botId: "ACCOUNT_STORE",
+      depositId: String(depositId),
+      userId: String(preflightDeposit.userId || ""),
+      amount: Number(preflightDeposit.amount || 0),
+      identifiers: [
+        { type: "UTR", value: preflightDeposit.utr },
+        ...(paymentIdentifiers || [])
+      ]
+    });
+    await commitGlobalPayment(recoveredClaim.paymentKey);
+    const recoveredUserId = String(preflightDeposit.userId || "").trim();
+    if (recoveredUserId) userReadCache.delete(recoveredUserId);
+    const err = new Error("Deposit already processed");
+    err.code = "ALREADY_PROCESSED";
+    err.recoveredGlobalCommit = true;
+    throw err;
+  }
   if (preflightDeposit.status !== "pending") {
     const err = new Error("Deposit already processed");
     err.code = "ALREADY_PROCESSED";
