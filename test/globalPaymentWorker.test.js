@@ -13,14 +13,14 @@ function makeDb() {
     return {
       bind(...values) { return statement(sql, values); },
       async run() {
-        if (sql.startsWith("INSERT OR IGNORE INTO global_payment_records")) {
+        if (sql.startsWith("INSERT INTO global_payment_records")) {
           const [key, bot, deposit, user, amount, created, updated] = params;
-          if (!records.has(key)) records.set(key, { payment_key:key, bot_id:bot, deposit_id:deposit, user_id:user, amount_minor:amount, status:"RESERVED", created_at:created, updated_at:updated });
+          if (records.has(key)) throw new Error("UNIQUE constraint failed: global_payment_records.payment_key"); records.set(key, { payment_key:key, bot_id:bot, deposit_id:deposit, user_id:user, amount_minor:amount, status:"RESERVED", created_at:created, updated_at:updated });
           return { meta:{changes:1} };
         }
-        if (sql.startsWith("INSERT OR IGNORE INTO global_payment_identifiers")) {
+        if (sql.startsWith("INSERT INTO global_payment_identifiers")) {
           const [hash, key, type, created] = params;
-          if (!aliases.has(hash)) aliases.set(hash,{identifier_hash:hash,payment_key:key,identifier_type:type,created_at:created});
+          if (aliases.has(hash)) throw new Error("UNIQUE constraint failed: global_payment_identifiers.identifier_hash"); aliases.set(hash,{identifier_hash:hash,payment_key:key,identifier_type:type,created_at:created});
           return { meta:{changes:1} };
         }
         if (sql.startsWith("DELETE FROM global_payment_records")) {
@@ -69,7 +69,12 @@ function makeDb() {
   }
   return {
     prepare(sql){return statement(sql);},
-    async batch(items){for(const item of items)await item.run();return items.map(()=>({success:true}));},
+    async batch(items){
+      const recordSnapshot=new Map([...records].map(([k,v])=>[k,{...v}]));
+      const aliasSnapshot=new Map([...aliases].map(([k,v])=>[k,{...v}]));
+      try{for(const item of items)await item.run();return items.map(()=>({success:true}));}
+      catch(error){records.clear();for(const [k,v] of recordSnapshot)records.set(k,v);aliases.clear();for(const [k,v] of aliasSnapshot)aliases.set(k,v);throw error;}
+    },
     records,aliases
   };
 }
