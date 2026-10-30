@@ -223,7 +223,11 @@ const deposit =
     approved =
       await db.approveDeposit(
         deposit.depositId,
-        "GMAIL_AUTO"
+        "GMAIL_AUTO",
+        [
+          { type: "UTR", value: payment.utr },
+          { type: "TRANSACTION_ID", value: payment.transactionId }
+        ]
       );
   } catch (err) {
 

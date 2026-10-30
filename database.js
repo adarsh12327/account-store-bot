@@ -12,6 +12,7 @@
 
 const { FieldValue } = require("./d1");
 const db = require("./d1");
+const { claim: claimGlobalPayment, commit: commitGlobalPayment } = require("./utils/globalPaymentLock");
 
 const USERS = "users";
 
@@ -808,10 +809,52 @@ async function sumApprovedDepositAmount() {
  * approval attempt on the same deposit is a no-op that reports
  * ALREADY_PROCESSED instead of double-crediting.
  */
-async function approveDeposit(depositId, adminId) {
+async function approveDeposit(depositId, adminId, paymentIdentifiers = []) {
   const depositRef = db.collection(DEPOSITS).doc(depositId);
+  const preflightSnap = await depositRef.get();
+  if (!preflightSnap.exists) throw new Error("Deposit not found");
+  const preflightDeposit = preflightSnap.data() || {};
+  // A previous attempt can finish the Firestore wallet transaction but
+  // lose the network response while committing the shared lock. Re-claim
+  // the same deterministic payment key and finish that commit idempotently.
+  if (preflightDeposit.status === "approved") {
+    const recoveredClaim = await claimGlobalPayment({
+      botId: "ACCOUNT_STORE",
+      depositId: String(depositId),
+      userId: String(preflightDeposit.userId || ""),
+      amount: Number(preflightDeposit.amount || 0),
+      identifiers: [
+        { type: "UTR", value: preflightDeposit.utr },
+        ...(paymentIdentifiers || [])
+      ]
+    });
+    await commitGlobalPayment(recoveredClaim.paymentKey);
+    const recoveredUserId = String(preflightDeposit.userId || "").trim();
+    if (recoveredUserId) userReadCache.delete(recoveredUserId);
+    const err = new Error("Deposit already processed");
+    err.code = "ALREADY_PROCESSED";
+    err.recoveredGlobalCommit = true;
+    throw err;
+  }
+  if (preflightDeposit.status !== "pending") {
+    const err = new Error("Deposit already processed");
+    err.code = "ALREADY_PROCESSED";
+    throw err;
+  }
+  const globalClaim = await claimGlobalPayment({
+    botId: "ACCOUNT_STORE",
+    depositId: String(depositId),
+    userId: String(preflightDeposit.userId || ""),
+    amount: Number(preflightDeposit.amount || 0),
+    identifiers: [
+      { type: "UTR", value: preflightDeposit.utr },
+      ...(paymentIdentifiers || [])
+    ]
+  });
 
-  const result = await db.runTransaction(async (txn) => {
+  let result;
+  try {
+    result = await db.runTransaction(async (txn) => {
     // ----------------------------------------------------------
     // READ PHASE — all reads happen before any writes
     // ----------------------------------------------------------
@@ -1001,7 +1044,26 @@ async function approveDeposit(depositId, adminId) {
       referralRate,
       referralReferrerId: referrerId,
     };
-  });
+    });
+  } catch (localError) {
+    // Resolve ambiguous Firestore outcomes before releasing the global reservation.
+    // If the deposit is already approved, preserve the lock and finish its commit.
+    const latestSnap = await depositRef.get();
+    if (!latestSnap.exists) {
+      await abortGlobalPayment(globalClaim.paymentKey);
+      throw localError;
+    }
+    const latestDeposit = latestSnap.data() || {};
+    if (latestDeposit.status === "approved") {
+      await commitGlobalPayment(globalClaim.paymentKey);
+    } else {
+      await abortGlobalPayment(globalClaim.paymentKey);
+    }
+    throw localError;
+  }
+
+  // Commit the global payment reservation only after the local wallet transaction succeeds.
+  await commitGlobalPayment(globalClaim.paymentKey);
 
   // Refresh the hot user cache immediately after a successful approval.
   // Otherwise My Wallet can temporarily show the pre-approval balance.

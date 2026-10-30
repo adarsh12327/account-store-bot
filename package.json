@@ -5,7 +5,8 @@
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
-    "migrate:d1": "node scripts/migrate-firestore-to-d1.js"
+    "migrate:d1": "node scripts/migrate-firestore-to-d1.js",
+    "test": "node --test"
   },
   "license": "UNLICENSED",
   "dependencies": {
