@@ -55,6 +55,21 @@ async function claimGlobalPayment(body, env) {
   }
   return json({ok:true,claimed:true,status:record.status,payment_key:paymentKey});
 }
+async function abortGlobalPayment(body,env){
+  const key=String(body?.payment_key||"").trim();
+  if(!/^[a-f0-9]{64}$/.test(key))return json({ok:false,reason:"INVALID_PAYMENT_KEY"},400);
+  const row=await env.DB.prepare("SELECT status FROM global_payment_records WHERE payment_key=?").bind(key).first();
+  if(!row)return json({ok:true,aborted:true,alreadyAbsent:true});
+  if(row.status==="COMMITTED")return json({ok:false,reason:"PAYMENT_ALREADY_COMMITTED"},409);
+  if(row.status!=="RESERVED")return json({ok:false,reason:"PAYMENT_NOT_RESERVED"},409);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM global_payment_identifiers WHERE payment_key=? AND payment_key IN (SELECT payment_key FROM global_payment_records WHERE payment_key=? AND status='RESERVED')").bind(key,key),
+    env.DB.prepare("DELETE FROM global_payment_records WHERE payment_key=? AND status='RESERVED'").bind(key)
+  ]);
+  const after=await env.DB.prepare("SELECT status FROM global_payment_records WHERE payment_key=?").bind(key).first();
+  if(after)return json({ok:false,reason:"PAYMENT_ABORT_RACE"},409);
+  return json({ok:true,aborted:true});
+}
 async function commitGlobalPayment(body,env){
   const key=String(body?.payment_key||"").trim();
   if(!/^[a-f0-9]{64}$/.test(key))return json({ok:false,reason:"INVALID_PAYMENT_KEY"},400);
@@ -71,9 +86,9 @@ export default {
    catch(error){return json({ok:false,service:"account-store-d1",database:"error",error:String(error?.message||error)},500);}
   }
   if(request.method!=="POST")return json({error:"Method not allowed"},405);
-  if(url.pathname==="/global-payment/claim"||url.pathname==="/global-payment/commit"){
+  if(url.pathname==="/global-payment/claim"||url.pathname==="/global-payment/commit"||url.pathname==="/global-payment/abort"){
    if(!authorized(request,env,"GLOBAL_PAYMENT_SECRET"))return json({ok:false,error:"Unauthorized"},401);
-   try{const body=await request.json();return url.pathname==="/global-payment/claim"?await claimGlobalPayment(body,env):await commitGlobalPayment(body,env);}
+   try{const body=await request.json();if(url.pathname==="/global-payment/claim")return await claimGlobalPayment(body,env);if(url.pathname==="/global-payment/abort")return await abortGlobalPayment(body,env);return await commitGlobalPayment(body,env);}
    catch(error){console.error("[GLOBAL PAYMENT LOCK]",error);return json({ok:false,error:"GLOBAL_PAYMENT_INTERNAL_ERROR"},500);}
   }
   if(!authorized(request,env,"D1_API_SECRET"))return json({error:"Unauthorized"},401);
