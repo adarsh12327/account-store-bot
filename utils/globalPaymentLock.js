@@ -33,4 +33,7 @@ async function claim({ botId, depositId, userId, amount, identifiers }) {
 async function commit(paymentKey) {
   return request("/global-payment/commit", { payment_key: paymentKey });
 }
-module.exports = { claim, commit };
+async function abort(paymentKey) {
+  return request("/global-payment/abort", { payment_key: paymentKey });
+}
+module.exports = { claim, commit, abort };
