@@ -141,6 +141,12 @@ async function processMessage(gmail, messageId, bot) {
     return "no_timestamp";
   }
 
+  // Temporary test lookback: inspect FamApp emails up to 78 hours old.
+  const lookbackStart = Date.now() - 78 * 60 * 60 * 1000;
+  if (gmailTimestamp < lookbackStart) {
+    return "outside_78_hour_window";
+  }
+
   const headers =
     message.data.payload?.headers || [];
 
@@ -200,6 +206,13 @@ const deposit =
   }
 
 
+
+  // Historical FamApp payments must not approve deposits created later.
+  const depositCreatedAt = timestampToMillis(deposit.createdAt);
+  if (depositCreatedAt && gmailTimestamp < depositCreatedAt - 120000) {
+    console.log(`[FAMAPP] Historical email predates deposit ${deposit.depositId}; skipped`);
+    return "payment_before_deposit";
+  }
 
   // ----------------------------------------------------------
   // FINAL SECURITY LOG
@@ -383,7 +396,7 @@ async function checkFamAppPayments(bot) {
         q:
   "from:no-reply@famapp.in " +
   'subject:"You received" ' +
-  "newer_than:1h",
+  "newer_than:4d",
        maxResults: 20,
       });
 
