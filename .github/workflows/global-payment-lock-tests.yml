@@ -16,3 +16,12 @@ jobs:
         with:
           node-version: 22
       - run: node --test
+      - name: Cloudflare Worker health and auth smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error https://account-store-d1-api.kumaradarshpatel30.workers.dev/health
+          code=$(curl --silent --output /tmp/global-lock-response.json --write-out "%{http_code}" -X POST https://account-store-d1-api.kumaradarshpatel30.workers.dev/global-payment/claim -H "content-type: application/json" -d '{}')
+          test "$code" = "401"
+          code=$(curl --silent --output /tmp/global-lock-response.json --write-out "%{http_code}" -X POST https://account-store-d1-api.kumaradarshpatel30.workers.dev/global-payment/commit -H "content-type: application/json" -d '{}')
+          test "$code" = "401"
