@@ -23,6 +23,12 @@ function makeDb() {
           if (!aliases.has(hash)) aliases.set(hash,{identifier_hash:hash,payment_key:key,identifier_type:type,created_at:created});
           return { meta:{changes:1} };
         }
+        if (sql.startsWith("DELETE FROM global_payment_records")) {
+          const [key] = params;
+          const row=records.get(key);
+          if(row&&row.status==="RESERVED")records.delete(key);
+          return {meta:{changes:1}};
+        }
         if (sql.startsWith("DELETE FROM global_payment_identifiers")) {
           const [key, ...hashes] = params;
           for (const hash of hashes) if (aliases.get(hash)?.payment_key === key) aliases.delete(hash);
@@ -105,4 +111,21 @@ test("global payment endpoints reject missing credentials",async()=>{
  const e=env();
  const response=await worker.fetch(request("/global-payment/claim",{}, "wrong-secret"),e);
  assert.equal(response.status,401);
+});
+
+test("abort releases only RESERVED payment claims and leaves committed claims intact",async()=>{
+ const e=env(), body=payment("KAP_SMS","abort-1","u-1",[{type:"UTR",value:"abort-ref"}]);
+ const claimed=await worker.fetch(request("/global-payment/claim",body),e);
+ const key=(await claimed.json()).payment_key;
+ const aborted=await worker.fetch(request("/global-payment/abort",{payment_key:key}),e);
+ assert.equal(aborted.status,200);
+ assert.equal(e.DB.records.has(key),false);
+ assert.equal(e.DB.aliases.size,0);
+ const retry=await worker.fetch(request("/global-payment/claim",body),e);
+ assert.equal(retry.status,200);
+ const retryKey=(await retry.json()).payment_key;
+ await worker.fetch(request("/global-payment/commit",{payment_key:retryKey}),e);
+ const blocked=await worker.fetch(request("/global-payment/abort",{payment_key:retryKey}),e);
+ assert.equal(blocked.status,409);
+ assert.equal(e.DB.records.get(retryKey).status,"COMMITTED");
 });
