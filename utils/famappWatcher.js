@@ -207,12 +207,11 @@ const deposit =
 
 
 
-  // Historical FamApp payments must not approve deposits created later.
-  const depositCreatedAt = timestampToMillis(deposit.createdAt);
-  if (depositCreatedAt && gmailTimestamp < depositCreatedAt - 120000) {
-    console.log(`[FAMAPP] Historical email predates deposit ${deposit.depositId}; skipped`);
-    return "payment_before_deposit";
-  }
+  // The user may submit the UTR several minutes after paying.
+  // Do not compare Gmail time with deposit creation time: the payment email
+  // naturally arrives before the user finishes the bot's deposit flow.
+  // Exact UTR + amount matching, pending status, Gmail message idempotency,
+  // and the atomic Firestore approval remain the safeguards.
 
   // ----------------------------------------------------------
   // FINAL SECURITY LOG
