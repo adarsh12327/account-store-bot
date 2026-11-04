@@ -12,7 +12,6 @@
 
 const { FieldValue } = require("./d1");
 const db = require("./d1");
-const { claim: claimGlobalPayment, commit: commitGlobalPayment } = require("./utils/globalPaymentLock");
 
 const USERS = "users";
 
@@ -809,64 +808,17 @@ async function sumApprovedDepositAmount() {
  * approval attempt on the same deposit is a no-op that reports
  * ALREADY_PROCESSED instead of double-crediting.
  */
-async function approveDeposit(depositId, adminId, paymentIdentifiers = []) {
-  const depositRef = db.collection(DEPOSITS).doc(depositId);
-  const preflightSnap = await depositRef.get();
-  if (!preflightSnap.exists) throw new Error("Deposit not found");
-  const preflightDeposit = preflightSnap.data() || {};
-  // A previous attempt can finish the Firestore wallet transaction but
-  // lose the network response while committing the shared lock. Re-claim
-  // the same deterministic payment key and finish that commit idempotently.
-  if (preflightDeposit.status === "approved") {
-    const recoveredClaim = await claimGlobalPayment({
-      botId: "ACCOUNT_STORE",
-      depositId: String(depositId),
-      userId: String(preflightDeposit.userId || ""),
-      amount: Number(preflightDeposit.amount || 0),
-      identifiers: [
-        { type: "UTR", value: preflightDeposit.utr },
-        ...(paymentIdentifiers || [])
-      ]
-    });
-    await commitGlobalPayment(recoveredClaim.paymentKey);
-    const recoveredUserId = String(preflightDeposit.userId || "").trim();
-    if (recoveredUserId) userReadCache.delete(recoveredUserId);
-    const err = new Error("Deposit already processed");
-    err.code = "ALREADY_PROCESSED";
-    err.recoveredGlobalCommit = true;
-    throw err;
-  }
-  if (preflightDeposit.status !== "pending") {
-    const err = new Error("Deposit already processed");
-    err.code = "ALREADY_PROCESSED";
-    throw err;
-  }
-  const globalClaim = await claimGlobalPayment({
-    botId: "ACCOUNT_STORE",
-    depositId: String(depositId),
-    userId: String(preflightDeposit.userId || ""),
-    amount: Number(preflightDeposit.amount || 0),
-    identifiers: [
-      { type: "UTR", value: preflightDeposit.utr },
-      ...(paymentIdentifiers || [])
-    ]
-  });
+async function approveDeposit(depositId, adminId) {
+  const depositRef = db.collection(DEPOSITS).doc(String(depositId));
 
-  let result;
-  try {
-    result = await db.runTransaction(async (txn) => {
-    // ----------------------------------------------------------
-    // READ PHASE — all reads happen before any writes
-    // ----------------------------------------------------------
-
+  // All payment approval state stays inside this bot's own database.
+  // The transaction atomically checks pending status and credits the wallet,
+  // so concurrent manual/Gmail approvals cannot double-credit.
+  const result = await db.runTransaction(async (txn) => {
     const depositSnap = await txn.get(depositRef);
-
-    if (!depositSnap.exists) {
-      throw new Error("Deposit not found");
-    }
+    if (!depositSnap.exists) throw new Error("Deposit not found");
 
     const deposit = depositSnap.data();
-
     if (deposit.status !== "pending") {
       const err = new Error("Deposit already processed");
       err.code = "ALREADY_PROCESSED";
@@ -874,32 +826,17 @@ async function approveDeposit(depositId, adminId, paymentIdentifiers = []) {
     }
 
     const userId = String(deposit.userId || "").trim();
-
-    if (!userId) {
-      throw new Error("INVALID_DEPOSIT_USER");
-    }
+    if (!userId) throw new Error("INVALID_DEPOSIT_USER");
 
     const userRef = db.collection(USERS).doc(userId);
     const userSnap = await txn.get(userRef);
-
-    if (!userSnap.exists) {
-      throw new Error("User not found for deposit");
-    }
+    if (!userSnap.exists) throw new Error("User not found for deposit");
 
     const user = userSnap.data();
-
     const depositAmount = Number(deposit.amount || 0);
-
-    if (
-      !Number.isFinite(depositAmount) ||
-      depositAmount <= 0
-    ) {
+    if (!Number.isFinite(depositAmount) || depositAmount <= 0) {
       throw new Error("INVALID_DEPOSIT_AMOUNT");
     }
-
-    // ----------------------------------------------------------
-    // REFERRAL READ PHASE
-    // ----------------------------------------------------------
 
     let referralCommission = 0;
     let referralRate = 0;
@@ -910,9 +847,7 @@ async function approveDeposit(depositId, adminId, paymentIdentifiers = []) {
 
     if (user.referrerId) {
       referrerId = String(user.referrerId).trim();
-
       referralRate = Number(user.referralRate || 0);
-
       if (
         referrerId &&
         referrerId !== userId &&
@@ -920,47 +855,23 @@ async function approveDeposit(depositId, adminId, paymentIdentifiers = []) {
         referralRate > 0 &&
         referralRate <= 100
       ) {
-        referrerRef =
-          db.collection(USERS).doc(referrerId);
-
+        referrerRef = db.collection(USERS).doc(referrerId);
         referrerSnap = await txn.get(referrerRef);
-
         if (referrerSnap.exists) {
           referrer = referrerSnap.data();
-
           referralCommission = Number(
-            (
-              depositAmount *
-              referralRate /
-              100
-            ).toFixed(2)
+            (depositAmount * referralRate / 100).toFixed(2)
           );
         }
       }
     }
 
-    // ----------------------------------------------------------
-    // CALCULATE USER BALANCE
-    // ----------------------------------------------------------
-
-    const newBalance =
-      Number(user.balance || 0) +
-      depositAmount;
-
-    const newTotalDeposit =
-      Number(user.totalDeposit || 0) +
-      depositAmount;
-
-    const newPendingDeposit =
-      Math.max(
-        0,
-        Number(user.pendingDeposit || 0) -
-        depositAmount
-      );
-
-    // ----------------------------------------------------------
-    // WRITE PHASE — all writes happen after reads
-    // ----------------------------------------------------------
+    const newBalance = Number(user.balance || 0) + depositAmount;
+    const newTotalDeposit = Number(user.totalDeposit || 0) + depositAmount;
+    const newPendingDeposit = Math.max(
+      0,
+      Number(user.pendingDeposit || 0) - depositAmount
+    );
 
     txn.update(userRef, {
       balance: newBalance,
@@ -969,70 +880,40 @@ async function approveDeposit(depositId, adminId, paymentIdentifiers = []) {
       updatedAt: FieldValue.serverTimestamp(),
     });
 
-    // ----------------------------------------------------------
-    // REFERRAL COMMISSION
-    // ----------------------------------------------------------
-
-    if (
-      referrerSnap &&
-      referrerSnap.exists &&
-      referrerRef &&
-      referrer &&
-      referralCommission > 0
-    ) {
-      const referrerBalance =
-        Number(referrer.balance || 0) +
-        referralCommission;
-
-      const referralEarnings =
-        Number(referrer.referralEarnings || 0) +
-        referralCommission;
-
+    if (referrerSnap?.exists && referrerRef && referrer && referralCommission > 0) {
+      const referrerBalance = Number(referrer.balance || 0) + referralCommission;
+      const referralEarnings = Number(referrer.referralEarnings || 0) + referralCommission;
       txn.update(referrerRef, {
         balance: referrerBalance,
         referralEarnings,
         updatedAt: FieldValue.serverTimestamp(),
       });
-
       writeTransactionRecord(txn, {
         userId: referrerId,
         type: "referral_commission",
         amount: referralCommission,
         balanceAfter: referrerBalance,
-        note:
-          `Referral commission ${referralRate}% ` +
-          `from deposit ${depositId}`,
+        note: `Referral commission ${referralRate}% from deposit ${depositId}`,
         relatedId: depositId,
       });
     }
-
-    // ----------------------------------------------------------
-    // MARK DEPOSIT APPROVED
-    // ----------------------------------------------------------
 
     txn.update(depositRef, {
       status: "approved",
       processedAt: FieldValue.serverTimestamp(),
       processedBy: String(adminId),
-
       referralCommission,
       referralRate,
       referralReferrerId: referrerId,
-
       updatedAt: FieldValue.serverTimestamp(),
     });
-
-    // ----------------------------------------------------------
-    // DEPOSIT TRANSACTION RECORD
-    // ----------------------------------------------------------
 
     writeTransactionRecord(txn, {
       userId,
       type: "deposit",
       amount: depositAmount,
       balanceAfter: newBalance,
-      note:
-        `Deposit approved (UTR: ${deposit.utr || "N/A"})`,
+      note: `Deposit approved (UTR: ${deposit.utr || "N/A"})`,
       relatedId: depositId,
     });
 
@@ -1044,37 +925,11 @@ async function approveDeposit(depositId, adminId, paymentIdentifiers = []) {
       referralRate,
       referralReferrerId: referrerId,
     };
-    });
-  } catch (localError) {
-    // Resolve ambiguous Firestore outcomes before releasing the global reservation.
-    // If the deposit is already approved, preserve the lock and finish its commit.
-    const latestSnap = await depositRef.get();
-    if (!latestSnap.exists) {
-      await abortGlobalPayment(globalClaim.paymentKey);
-      throw localError;
-    }
-    const latestDeposit = latestSnap.data() || {};
-    if (latestDeposit.status === "approved") {
-      await commitGlobalPayment(globalClaim.paymentKey);
-    } else {
-      await abortGlobalPayment(globalClaim.paymentKey);
-    }
-    throw localError;
-  }
+  });
 
-  // Commit the global payment reservation only after the local wallet transaction succeeds.
-  await commitGlobalPayment(globalClaim.paymentKey);
-
-  // Refresh the hot user cache immediately after a successful approval.
-  // Otherwise My Wallet can temporarily show the pre-approval balance.
+  // Invalidate cached wallet data only after the local transaction commits.
   const approvedUserId = String(result?.userId || "").trim();
-  if (approvedUserId) {
-    userReadCache.delete(approvedUserId);
-  }
-
-  // IMPORTANT: return the transaction result to the admin handler.
-  // Without this, the deposit is committed but the handler receives
-  // undefined and crashes while rendering the approval confirmation.
+  if (approvedUserId) userReadCache.delete(approvedUserId);
   return result;
 }
 
